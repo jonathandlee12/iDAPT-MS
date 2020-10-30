@@ -1,0 +1,75 @@
+---
+title: "2020-09-18_analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(ggplot2)
+library(viridis)
+
+```
+
+CUT&RUN 1% FDR Merged Peaks - # peaks overlapping ATAC-seq peaks
+awk -vOFS='\t' '{print $1,$2,$3}' cnr_120_combam_2_peaks.narrowPeak | uniq | bedtools intersect -a - -b k562_nucvinput_peaks_noblacklist.nochr.bed -wa -u | wc -l
+awk -vOFS='\t' '{print $1,$2,$3}' cnr_120_combam_2_peaks.narrowPeak | uniq | wc -l
+1975 / 2037 = 0.9696 # ERH
+
+awk -vOFS='\t' '{print $1,$2,$3}' cnr_120_combam_4_peaks.narrowPeak | uniq | bedtools intersect -a - -b k562_nucvinput_peaks_noblacklist.nochr.bed -wa -u | wc -l
+awk -vOFS='\t' '{print $1,$2,$3}' cnr_120_combam_4_peaks.narrowPeak | uniq | wc -l
+1991 / 2018  = 0.9866 # WBP11
+
+```{r, eval=T}
+
+# create a dataset
+antibody <- factor(c(rep("ERH" , 2) , rep("WBP11" , 2)), levels=c("WBP11", "ERH"))
+#levels(antibody) <- c("ERH", "WBP11")
+atac_overlap <- rep(c("Overlapping" , "Non-Overlapping"),2)
+value <- c(1975,2037-1975,1991,2018-1991)
+data <- data.frame(antibody,atac_overlap,value)
+```
+
+```{r, fig.width=5, fig.height=2}
+ggplot(data, aes(fill=atac_overlap, y=value, x=antibody)) + 
+    geom_bar(position="stack", stat="identity") + ylim(c(0,2500)) + 
+    scale_fill_manual(values=viridis(4), name="iDAPT-seq Peak Overlap") + theme_classic() + coord_flip() + xlab("CUT&RUN\nAntibody") + ylab("CUT&RUN Peaks\nFDR 1%")
+```
+
+```{r, eval=T}
+encode_atac <- read.csv(file="2020-09-18_encode_atac_overlap.csv", header=F)
+```
+
+```{r, eval=T}
+encode_atac$chip <- as.character(encode_atac$V2)
+library(stringr)
+encode_atac$chip <- str_replace_all(encode_atac$chip, "3xFLAG-", "")
+encode_atac$chip <- str_replace_all(encode_atac$chip, "eGFP-", "")
+encode_atac$chip <- unlist(strsplit(encode_atac$chip, "-human"))[c(T,F)]
+```
+
+```{r, eval=T}
+k562_pos.neg <- read.table(file="../../../DATA/EXP-JDL-391/TMT/tmt analysis/k562_posneg.txt", header=T, sep='\t')
+row.names(k562_pos.neg) <- k562_pos.neg[,1]
+k562_pos.neg <- k562_pos.neg[,-1]
+```
+
+```{r, eval=T}
+plot(k562_pos.neg$rank, k562_pos.neg$logFC) # ranked by logFC!
+```
+
+```{r, eval=T}
+encode_atac_tmt <- merge(k562_pos.neg, encode_atac, by.x="GeneSymbol", by.y="chip")
+encode_atac_tmt$GeneSymbol <- factor(encode_atac_tmt$GeneSymbol, levels=rev(unique(encode_atac_tmt$GeneSymbol)))
+```
+
+```{r, eval=T, fig.width=3, fig.height=9}
+ggplot(subset(encode_atac_tmt, logFC > 0 & adj.P.Val < 0.05), aes(x=GeneSymbol, y=V1)) + geom_point() + theme_classic() + coord_flip() + theme(axis.text.y = element_text(size = 4)) + ylab("# iDAPT-seq Peaks Overlapping\nENCODE ChIP-seq Peaks") + xlab("Gene Symbol") + scale_y_continuous(trans="log10", breaks=c(0.1,1,10,100,1000,10000,100000)) + geom_hline(yintercept=1, lty=3) # + ylim(c(0.1,80000))
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,617 @@
+---
+title: "2018-11-25_analysis"
+author: "Jonathan Lee"
+date: "11/25/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("preprocessCore")
+#biocLite()
+library(preprocessCore)
+#biocLite("sva")
+library(sva)
+#biocLite("limma")
+library(limma)
+#install.packages(c("wordcloud","tm"),repos="http://cran.r-project.org")
+#library(wordcloud)
+#library(tm)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+#biocLite("GO.db")
+library(GO.db)
+library(gProfileR)
+library(reactome.db)
+library(fgsea)
+library(biomaRt)
+#biocLite("org.Hs.eg.db")
+library(org.Hs.eg.db)
+library(dplyr)
+library(reshape2)
+library(pheatmap)
+library(clusterProfiler)
+#install.packages("rentrez")
+library(rentrez)
+library(igraph)
+```
+
+## Load TMT data from Joao as .csv
+
+```{r, eval=T, fig.width=2.5, fig.height=2}
+#tmt_data <- read.csv(file="../2018-11-05_JLee_9plex.csv")
+tmt_peptides <- read.csv(file="../2019-10-30_JDL_10plex.csv")
+
+tmt_peptides$GeneSymbol <- as.character(tmt_peptides$GeneSymbol)
+tmt_peptides$GeneSymbol[which(grepl("-Mar", tmt_peptides$GeneSymbol))] <- paste0("MARCH", str_replace(tmt_peptides$GeneSymbol[which(grepl("-Mar", tmt_peptides$GeneSymbol))], "-.*", ""))
+tmt_peptides$GeneSymbol[which(grepl("-Sep", tmt_peptides$GeneSymbol))] <- paste0("SEPT", str_replace(tmt_peptides$GeneSymbol[which(grepl("-Sep", tmt_peptides$GeneSymbol))], "-.*", ""))
+
+## Unique.Razor ##
+# unique peptides = peptides exclusive to a single protein
+# razor peptides = peptides shared between proteins
+ggplot(data.frame(xtabs(~tmt_peptides$Unique.Razor)), aes(x=tmt_peptides.Unique.Razor, y=Freq)) + geom_bar(stat="identity", position=position_dodge(0.95))
+hist(xtabs(~subset(tmt_peptides)$PeptideId))
+hist(tmt_peptides$IsolationSpecificity, main="Isolation Specificity Distribution", xlim=c(0,1), xlab="Isolation Specificity")
+length(unique(subset(tmt_peptides)$PeptideId)) # 23,392 detected peptides
+length(unique(tmt_peptides$ProteinId)) # 6,683 proteins
+length(unique(tmt_peptides$GroupId)) # 5888 protein groups
+length(unique(subset(tmt_peptides, Unique.Razor == "U")$PeptideId)) # 6609 unique peptides detected
+length(unique(subset(tmt_peptides, Unique.Razor == "U")$ProteinId)) # 2263 unique proteins represented by unique peptides
+length(unique(tmt_peptides$RunLoadPath))
+hist(tmt_peptides$Redundancy)
+```
+
+```{r, eval=T, fig.width=2.5, fig.height=2}
+# single filtering step...
+tmt_peptides <- subset(tmt_peptides, IsolationSpecificity >= 0.7)
+
+#which(rowSums(tmt_peptides[,12:19]) == 0)
+
+## Unique.Razor ##
+# unique peptides = peptides exclusive to a single protein
+# razor peptides = peptides shared between proteins
+ggplot(data.frame(xtabs(~tmt_peptides$Unique.Razor)), aes(x=tmt_peptides.Unique.Razor, y=Freq)) + geom_bar(stat="identity", position=position_dodge(0.95))
+hist(xtabs(~subset(tmt_peptides)$PeptideId))
+hist(tmt_peptides$IsolationSpecificity)
+length(unique(subset(tmt_peptides)$PeptideId)) # 20,184 detected peptides
+length(unique(tmt_peptides$ProteinId)) # 6,245 detected proteins
+length(unique(tmt_peptides$GroupId)) # 5,494 protein groups detected
+
+# of the 5,494 detected protein groups...
+length(which(xtabs(~tmt_peptides[duplicated(paste0(tmt_peptides$ProteinId, tmt_peptides$GroupId)),]$GroupId)>1)) # 3,399 groups with multiple protein IDs associated
+length(which(xtabs(~tmt_peptides[duplicated(paste0(tmt_peptides$ProteinId, tmt_peptides$GroupId)),]$GroupId)==1)) # 909 groups with a single associated protein ID
+hist(xtabs(~tmt_peptides[duplicated(paste0(tmt_peptides$ProteinId, tmt_peptides$GroupId)),]$GroupId), breaks=1000, xlab="Number of Protein Ids per Protein Group", main="Protein Id/Group Distribution")
+
+length(unique(subset(tmt_peptides, Unique.Razor == "U")$PeptideId)) # 5,512 unique peptides detected
+length(unique(subset(tmt_peptides, Unique.Razor == "R")$PeptideId)) # 16,567 razor peptides detected
+length(unique(tmt_peptides$RunLoadPath))
+hist(tmt_peptides$Redundancy)
+```
+
+```{r, eval=T, fig.width=2, fig.height=1}
+tmt_peptides_norm <- data.frame(ProteinId=tmt_peptides[,c(1)], GeneSymbol=tmt_peptides[,2], GroupId=tmt_peptides[,c(4)], Unique.Razor=tmt_peptides[,c(9)], SearchId=tmt_peptides[,6], PeptideId=tmt_peptides[,7], tmt_peptides[,c(12:21)])
+colnames(tmt_peptides_norm)[-c(1:6)] <- colnames(tmt_peptides[,c(12:21)])
+
+normalization <- subset(tmt_peptides_norm, grepl("SAV_STRAV", ProteinId) | grepl("TRYP", ProteinId))
+normalization <- apply(normalization[,which(grepl("rq", colnames(normalization)))], 2, function(x)(median(x))) # geometric mean
+normalization <- normalization / mean(normalization)
+
+tmt_peptides_qnorm <- data.frame(tmt_peptides_norm[,c(1:6)], log2(normalize.quantiles(as.matrix((tmt_peptides_norm[,c(7:13)]+1)))))
+tmt_peptides_norm_all <- data.frame(tmt_peptides_norm[,c(1:6)], log2(sweep(tmt_peptides_norm[,c(7:16)]+1, 2, normalization[1:10], "/")))
+tmt_peptides_norm_atra <- data.frame(tmt_peptides_norm[,c(1:6)], log2(sweep(tmt_peptides_norm[,c(11:16)]+1, 2, normalization[5:10], "/")))
+tmt_peptides_norm_ctrl <- data.frame(tmt_peptides_norm[,c(1:6)], log2(sweep(tmt_peptides_norm[,c(7:13)]+1, 2, normalization[1:7], "/")))
+
+
+colnames(tmt_peptides_qnorm)[7:13] <- c("DMSO, TF_1", "DMSO, TF_2", "DMSO, AF_1", "DMSO, AF_2", "DMSO, TP3_1", "DMSO, TP3_2", "DMSO, TP3_3")
+row.names(tmt_peptides_qnorm) <- paste(tmt_peptides_qnorm$SearchId, tmt_peptides_qnorm$PeptideId)
+
+colnames(tmt_peptides_norm_all)[7:16] <- c("DMSO, TF_1", "DMSO, TF_2", "DMSO, AF_1", "DMSO, AF_2", "DMSO, TP3_1", "DMSO, TP3_2", "DMSO, TP3_3", "ATRA, TP3_1", "ATRA, TP3_2", "ATRA, TP3_3")
+row.names(tmt_peptides_norm_all) <- paste(tmt_peptides_norm$SearchId, tmt_peptides_norm$PeptideId)
+
+#colnames(tmt_peptides_qnorm)[7:12] <- c("DMSO, TP3_1", "DMSO, TP3_2", "DMSO, TP3_3", "ATRA, TP3_1", "ATRA, TP3_2", "ATRA, TP3_3")
+
+colnames(tmt_peptides_norm_atra)[7:12] <- c("DMSO, TP3_1", "DMSO, TP3_2", "DMSO, TP3_3", "ATRA, TP3_1", "ATRA, TP3_2", "ATRA, TP3_3")
+row.names(tmt_peptides_norm_atra) <- paste(tmt_peptides_norm$SearchId, tmt_peptides_norm$PeptideId)
+
+colnames(tmt_peptides_norm_ctrl)[7:13] <- c("DMSO, TF_1", "DMSO, TF_2", "DMSO, AF_1", "DMSO, AF_2", "DMSO, TP3_1", "DMSO, TP3_2", "DMSO, TP3_3")
+row.names(tmt_peptides_norm_ctrl) <- paste(tmt_peptides_norm$SearchId, tmt_peptides_norm$PeptideId)
+
+```
+
+```{r, eval=T}
+# need to collapse peptides into proteins and/or protein groups...
+# two steps:
+# first, collapse proteins with unique peptides only
+# second, collapse protein groups with more than one protein
+# use average to collapse peptides in the normalized log2 setting
+tmt_proteins_norm_all <- subset(tmt_peptides_norm_all, Unique.Razor=="U")[,c(1,7:16)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame() # 2056 uniquely quantifiable proteins
+tmt_proteins_norm_all <- rbind(tmt_proteins_norm_all,
+             subset(tmt_peptides_norm_all, !(ProteinId %in% tmt_proteins_norm_all$ProteinId))[,c(1,7:16)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame()) # 6245 proteins...
+row.names(tmt_proteins_norm_all) <- tmt_proteins_norm_all$ProteinId
+
+tmt_proteins_norm_ctrl <- subset(tmt_peptides_norm_ctrl, Unique.Razor=="U")[,c(1,7:13)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame() # 2056 uniquely quantifiable proteins
+tmt_proteins_norm_ctrl <- rbind(tmt_proteins_norm_ctrl,
+             subset(tmt_peptides_norm_ctrl, !(ProteinId %in% tmt_proteins_norm_ctrl$ProteinId))[,c(1,7:13)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame()) # 6245 proteins...
+row.names(tmt_proteins_norm_ctrl) <- tmt_proteins_norm_ctrl$ProteinId
+
+tmt_proteins_norm_atra <- subset(tmt_peptides_norm_atra, Unique.Razor=="U")[,c(1,7:12)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame() # 2056 uniquely quantifiable proteins
+tmt_proteins_norm_atra <- rbind(tmt_proteins_norm_atra,
+             subset(tmt_peptides_norm_atra, !(ProteinId %in% tmt_proteins_norm_atra$ProteinId))[,c(1,7:12)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame()) # 6245 proteins...
+row.names(tmt_proteins_norm_atra) <- tmt_proteins_norm_atra$ProteinId
+
+tmt_proteins_qnorm <- subset(tmt_peptides_qnorm, Unique.Razor=="U")[,c(1,7:13)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame() # 2056 uniquely quantifiable proteins
+tmt_proteins_qnorm <- rbind(tmt_proteins_qnorm,
+             subset(tmt_peptides_qnorm, !(ProteinId %in% tmt_proteins_qnorm$ProteinId))[,c(1,7:13)] %>% group_by(ProteinId) %>% summarise_all(mean) %>% as.data.frame()) # 6245 proteins...
+row.names(tmt_proteins_qnorm) <- tmt_proteins_qnorm$ProteinId
+```
+
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+#install.packages("ggdendro")
+library(ggdendro)
+d = dist(t(tmt_proteins_norm_ctrl[,-c(1)])) # euclidean
+hc = hclust(d)
+ggdendrogram(hc, rotate = FALSE, size = 2)
+
+library(viridis)
+#pheatmap(cor((tmt_proteins_norm[,-c(1)])), color = colorRampPalette(c("navyblue", "gray", "indianred"))(11))
+pheatmap(cor((tmt_proteins_norm_ctrl[,-c(1)])), color = rev(viridis(11)))
+
+pc <- prcomp(t(tmt_proteins_norm_ctrl[,-c(1)]))
+#pc <- prcomp(t(log2(intensities+0.01)))
+summary(pc)
+
+ggplot(data.frame(pc$x, label=colnames(tmt_proteins_norm_ctrl[,-c(1)]), sample=c(rep("TF",2), rep("AF",2), rep("TP3",3))), aes(PC1, PC2)) + 
+  geom_point(size=3, aes(color=sample)) + theme_classic() + geom_text_repel(aes(label=label)) + xlab(paste0("PC1 (", 100*summary(pc)$importance[2,1], "% of variance)")) + ylab(paste0("PC2 (", 100*summary(pc)$importance[2,2], "% of variance)")) + geom_vline(xintercept=0, lty=3, color="red") + theme(legend.position = "none") #theme(legend.title=element_blank())
+
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+#install.packages("ggdendro")
+library(ggdendro)
+d = dist(t(tmt_proteins_norm_all[,-c(1)])) # euclidean
+hc = hclust(d)
+ggdendrogram(hc, rotate = FALSE, size = 2)
+
+library(viridis)
+#pheatmap(cor((tmt_proteins_norm[,-c(1)])), color = colorRampPalette(c("navyblue", "gray", "indianred"))(11))
+pheatmap(cor((tmt_proteins_norm_all[,-c(1)])), color = rev(viridis(11)))
+```
+
+```{r, eval=T}
+# limma
+TS <- factor(c(rep("neg",4), rep("pos",3)))
+design <- model.matrix(~0 + TS)
+colnames(design) <- levels(TS)
+fit <- lmFit(tmt_proteins_norm_[,c(2:8)], design)
+cont.matrix <- makeContrasts(
+  pos.neg = pos - neg,
+  levels = design)
+fit.adj <- contrasts.fit(fit, cont.matrix)
+fit.adj <- eBayes(fit.adj, trend=T, robust=T)
+
+pos.neg <- topTable(fit.adj, number=100000, coef = "pos.neg", 
+                   adjust.method="fdr",lfc=0, sort.by="logFC", p.value=1)
+
+pos.neg$rank <- rank((pos.neg$logFC))
+pos.neg <- merge(pos.neg, tmt_peptides_norm[!duplicated(tmt_peptides_norm[,1:2]),1:2], by.x=0, by.y=1)
+
+pos.neg$uniprot <- unlist(strsplit(pos.neg$Row.names, "|", fixed=T))[seq(2, length(pos.neg$Row.names)*3, 3)]
+pos.neg$uniprot2 <- str_replace_all(pos.neg$uniprot, "-.*", "")
+
+```
+
+```{r, eval=T}
+# limma
+TS <- factor(c(rep("TF",2), rep("AF", 2), rep("pos",3)))
+design <- model.matrix(~0 + TS)
+colnames(design) <- levels(TS)
+fit <- lmFit(tmt_proteins_qnorm[,c(2:8)], design)
+cont.matrix <- makeContrasts(
+  pos.neg = pos - AF,
+  levels = design)
+fit.adj <- contrasts.fit(fit, cont.matrix)
+fit.adj <- eBayes(fit.adj, trend=T, robust=T)
+
+pos.neg.qnorm <- topTable(fit.adj, number=100000, coef = "pos.neg", 
+                   adjust.method="fdr",lfc=0, sort.by="logFC", p.value=1)
+
+pos.neg.qnorm$rank <- rank((pos.neg.qnorm$logFC))
+pos.neg.qnorm <- merge(pos.neg.qnorm, tmt_peptides_qnorm[!duplicated(tmt_peptides_qnorm[,1:2]),1:2], by.x=0, by.y=1)
+
+pos.neg.qnorm$uniprot <- unlist(strsplit(pos.neg.qnorm$Row.names, "|", fixed=T))[seq(2, length(pos.neg.qnorm$Row.names)*3, 3)]
+pos.neg.qnorm$uniprot2 <- str_replace_all(pos.neg.qnorm$uniprot, "-.*", "")
+
+```
+
+```{r, eval=T}
+dim(subset(pos.neg, logFC > 0 & adj.P.Val < 0.05))
+subset(pos.neg, GeneSymbol %in% c("CTCF", "CTCFL", "JUN", "JUND", "JUNB", "CREB1", "MAX", "TP53", "NFKB1", "NFKB2"))
+```
+
+```{r, eval=T}
+bg_genes <- getBM(attributes= c("entrezgene_id", "uniprotswissprot", "external_gene_name"),
+                      mart = useDataset("hsapiens_gene_ensembl", useMart("ensembl")))
+bg_genes <- subset(bg_genes, entrezgene_id != "" | uniprotswissprot != "")
+#bg_genes <- data.frame(ont="background", gene=as.character(unique(subset(bg_genes, uniprotswissprot != "")$entrezgene)), stringsAsFactors = F)
+```
+
+```{r, eval=T}
+# in bash/R...
+#devtools::install_github("GreenleafLab/chromVARmotifs")
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("chromVAR")
+#biocLite("motifmatchr")
+#biocLite("BSgenome.Hsapiens.UCSC.hg19")
+#biocLite("BSgenome.Hsapiens.UCSC.hg38")
+
+library(chromVARmotifs)
+data("human_pwms_v2")
+```
+
+```{r, eval=T}
+pwms <- NULL
+for(l in strsplit(names(human_pwms_v2),"_")){
+  pwms <- c(pwms, l[3])
+}
+
+chromvar <- NULL
+chromvar$pwm <- unique(subset(bg_genes, external_gene_name %in% pwms)$uniprotswissprot)
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+goi <- c("PLSCR1","HMGB1", "POLR1D", "PQBP1", "H2AFX","BCLAF1","WBP11","YBX1", "ZC3H4", "TMPO", "MAX", "ERH", "MED4",  "MED1",  "MED9",  "ARID1B", "SMARCA4", "ARID1A",  "BRD4")
+goi_subset <- subset(pos.neg[order(pos.neg$adj.P.Val),][!duplicated(pos.neg[order(pos.neg$adj.P.Val),]$GeneSymbol),], GeneSymbol %in% goi)
+
+ggplot(pos.neg, aes(x=logFC, y=-log10(adj.P.Val))) + geom_point(data=subset(pos.neg, logFC < 0 | adj.P.Val > 0.05), pch=20, color="lightgray", size=0.5,alpha=0.1) + geom_point(pch=20, size=0.5, color="skyblue", data=subset(pos.neg, logFC > 0 & adj.P.Val < 0.05), alpha=0.5) + geom_point(pch=20, size=0.5, color="red", data=subset(pos.neg, GeneSymbol %in% pwms & adj.P.Val < 0.05 & logFC > 0)) + theme_classic() + xlim(c(-2, 5)) + geom_hline(yintercept=0, lty=3) + geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red") +xlab("Log2 Fold Change, NB4 iDAPT-MS\nFusion vs. Control Probes") + ylab("-Log10 FDR") + geom_point(pch=20, size=0.5, color="black", data=goi_subset) + geom_text_repel(data=goi_subset, aes(label=GeneSymbol), size=2.5, segment.color="black", segment.alpha=0.8, segment.size=0.1, force=5)
+
+```
+
+```{r, eval=T}
+# limma
+TS <- factor(c(rep("dmso",3), rep("atra",3)))
+design <- model.matrix(~0 + TS)
+colnames(design) <- levels(TS)
+fit <- lmFit(tmt_proteins_qnorm[,c(2:7)], design)
+cont.matrix <- makeContrasts(
+  atra.dmso = atra - dmso,
+  levels = design)
+fit.adj <- contrasts.fit(fit, cont.matrix)
+fit.adj <- eBayes(fit.adj, trend=T, robust=T)
+
+atra.dmso <- topTable(fit.adj, number=100000, coef = "atra.dmso", 
+                   adjust.method="fdr",lfc=0, sort.by="logFC", p.value=1)
+
+atra.dmso$rank <- rank(atra.dmso$logFC)
+atra.dmso <- merge(atra.dmso, tmt_peptides_norm[!duplicated(tmt_peptides_norm[,1:2]),1:2], by.x=0, by.y=1)
+
+atra.dmso$uniprot <- unlist(strsplit(atra.dmso$Row.names, "|", fixed=T))[seq(2, length(atra.dmso$Row.names)*3, 3)]
+atra.dmso$uniprot2 <- str_replace_all(atra.dmso$uniprot, "-.*", "")
+
+```
+
+```{r, eval=T}
+dim(subset(atra.dmso, logFC > 0 & adj.P.Val < 0.05))
+subset(atra.dmso, GeneSymbol=="CTCF")
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+ggplot(atra.dmso, aes(x=logFC, y=-log10(adj.P.Val))) + geom_point(pch=20, color="lightgray") + geom_point(pch=20, color="skyblue", data=subset(atra.dmso, abs(logFC) > 0 & adj.P.Val < 0.05)) + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red") + geom_text_repel(data=subset(atra.dmso, abs(logFC) > 2 & adj.P.Val < 1e-5), aes(label=GeneSymbol), size=2, segment.color="black", segment.alpha=0.8, segment.size=0.1)
+```
+
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+ggplot(atra.dmso, aes(x=logFC, y=-log10(adj.P.Val))) + geom_point(pch=20, color="lightgray", alpha=0.2, data=subset(atra.dmso, adj.P.Val > 0.05)) + geom_point(pch=20, color="skyblue", alpha=0.3, data=subset(atra.dmso, logFC > 0 & adj.P.Val < 0.05)) + geom_point(pch=20, color="indianred", alpha=0.3, data=subset(atra.dmso, logFC < 0 & adj.P.Val < 0.05)) + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red") + xlab("Log2 Fold Change,\nNB4 ATRA vs. DMSO") + ylab("-Log10 FDR") +
+  geom_text_repel(data=subset(atra.dmso[!duplicated(atra.dmso[,1:7]),], (GeneSymbol %in% c("TCF3", "EBF3", "BCL11A", "RARA", "PML", "SPI1", "CEBPA", "CEBPB", "CEBPE", "RXRA", "RXRB", "RXRG", "PADI4", "PADI2", "HIC1", "JUN")) & adj.P.Val < 0.05), aes(label=GeneSymbol), size=3, segment.color="black", segment.alpha=0.8, segment.size=0.1) +
+  geom_point(data=subset(atra.dmso[!duplicated(atra.dmso[,1:7]),], (GeneSymbol %in% c("TCF3", "EBF3", "BCL11A", "RARA", "PML", "SPI1", "CEBPA", "CEBPB", "CEBPE", "RXRA", "RXRB", "RXRG", "PADI4", "PADI2", "HIC1", "JUN")) & adj.P.Val < 0.05),  color="black")
+  
+```
+
+
+
+```{r, eval=T, fig.width=2, fig.height=2}
+ggplot(atra.dmso, aes(x=logFC, y=-log10(adj.P.Val))) + geom_point(pch=20, color="lightgray") + geom_point(pch=20, color="skyblue", data=subset(atra.dmso, abs(logFC) > 0 & adj.P.Val < 0.05)) + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red")+ geom_point(pch=20, color="red", data=subset(atra.dmso, GeneSymbol %in% c("DNMT3B", "HDAC2", "ETV6", "TOP2A", "TOP2B", "PADI4", "CEBPE",  "CEBPB", "RARA", "PML", "SPI1")), aes(label=GeneSymbol)) + geom_text_repel(data=subset(atra.dmso, GeneSymbol %in% c("DNMT3B", "HDAC2", "ETV6", "TOP2A", "TOP2B", "PADI4", "CEBPE", "CEBPB","RARA", "PML", "SPI1")), aes(label=GeneSymbol), size=2, segment.color="black", segment.alpha=0.8, segment.size=0.1)
+```
+
+```{r, eval=T}
+atra.dmso.ranks <- atra.dmso$logFC
+names(atra.dmso.ranks) <- atra.dmso$uniprot2
+```
+
+```{r, eval=T}
+
+write.table(atra.dmso, file="nb4_atra.dmso.txt", sep='\t', quote=F, row.names=F)
+
+```
+
+```{r, eval=T}
+pos.neg.ranks <- pos.neg$logFC
+names(pos.neg.ranks) <- pos.neg$uniprot2
+```
+
+```{r, eval=T}
+pos.neg.qnorm.ranks <- pos.neg.qnorm$logFC
+names(pos.neg.qnorm.ranks) <- pos.neg.qnorm$uniprot2
+```
+
+```{r, eval=T}
+write.table(pos.neg, file="nb4_posneg.txt", sep='\t', quote=F, row.names=F)
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+ggplot(atra.dmso, aes(x=logFC, y=-log10(adj.P.Val))) + geom_point(pch=20, color="lightgray") + geom_point(pch=20, color="skyblue", data=subset(atra.dmso, abs(logFC) > 0 & adj.P.Val < 0.05)) + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red") + geom_text_repel(data=subset(atra.dmso, abs(logFC) > 2 & adj.P.Val < 1e-5), aes(label=GeneSymbol), size=2, segment.color="black", segment.alpha=0.8, segment.size=0.1)
+```
+
+
+```{r, eval=T, fig.width=1.5, fig.height=1}
+fgsea_pwm <- fgsea(pathways=chromvar, 
+                   stats=pos.neg.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_pwm <- fgsea_pwm[order(fgsea_pwm$NES),]
+fgsea_pwm$pathway <- factor(fgsea_pwm$pathway, levels=unique(fgsea_pwm$pathway))
+fgsea_pwm
+plotEnrichment(chromvar$pwm, pos.neg.ranks) + ylab("Enrichment Score") + xlab("Protein Rank")# + ggtitle("tal_dn")
+
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1}
+fgsea_pwm <- fgsea(pathways=chromvar, 
+                   stats=atra.dmso.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_pwm <- fgsea_pwm[order(fgsea_pwm$NES),]
+fgsea_pwm$pathway <- factor(fgsea_pwm$pathway, levels=unique(fgsea_pwm$pathway))
+fgsea_pwm
+plotEnrichment(chromvar$pwm, atra.dmso.ranks) + ylab("Enrichment Score") + xlab("Protein Rank")# + ggtitle("tal_dn")
+```
+
+```{r, eval=T}
+corum_anno <- read.table(file="corum/allComplexes.txt", header=T, sep='\t', comment.char="", quote = "")
+corum_id <- read.table(file="corum/uniprot_corum_mapping.txt", header=T, sep='\t')
+corum_id <- merge(corum_id, corum_anno, by.x=2, by.y=1)
+
+corum_list <- list() # use uniprot ids for complex mapping
+for(c in 1:length(unique(corum_id$ComplexName))){
+  corum_list[[c]] <- unique(as.character(corum_id[which(corum_id$ComplexName == unique(corum_id$ComplexName)[c]),2]))
+}
+names(corum_list) <- unique(corum_id$ComplexName)
+corum_list <- corum_list[which(!duplicated(corum_list))]
+```
+
+```{r, eval=T, fig.width=3, fig.height=2}
+fgsea_corum <- fgsea(pathways=corum_list, 
+                   stats=pos.neg.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_corum <- fgsea_corum[order(fgsea_corum$NES),]
+fgsea_corum$pathway <- factor(fgsea_corum$pathway, levels=unique(fgsea_corum$pathway))
+
+ggplot(subset(fgsea_corum, padj < 0.05), aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Normalized Enrichment Score") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("CORUM Complex Enrichment") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="FDR", trans = "log") + #, breaks=c(0.5, 0.05, 0.005, 0.0005, 0.00005)) +
+  ylim(c(-3,3)) + geom_hline(yintercept=0, lwd=0.1)
+```
+
+```{r, eval=T, fig.width=5, fig.height=3}
+fgsea_corum <- fgsea(pathways=corum_list, 
+                   stats=atra.dmso.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_corum <- fgsea_corum[order(fgsea_corum$NES),]
+fgsea_corum$pathway <- factor(fgsea_corum$pathway, levels=unique(fgsea_corum$pathway))
+
+ggplot(subset(fgsea_corum, padj < 0.05), aes(y = NES, x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("CORUM Complex Enrichment") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="FDR", trans = "log") + #, breaks=c(0.5, 0.05, 0.005, 0.0005, 0.00005)) +
+  ylim(c(-3,3)) + geom_hline(yintercept=0, lwd=0.1)
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1}
+#source("http://bioconductor.org/biocLite.R")
+#biocLite()
+#biocLite("fgsea")
+library(fgsea)
+# random 2000 peaks from ChIP-seq
+set.seed(1)
+plotEnrichment(corum_list$`Mediator complex`, atra.dmso.ranks) + ylab("Enrichment Score") + xlab("Protein Rank")
+```
+
+```{r, eval=T}
+#biogrid <- read.table(file="../../../EXP-JDL-220/tmt analysis/biogrid/BIOGRID-MV-Physical-3.5.166.tab2.txt", header=T, sep='\t', comment.char = "", quote="")
+biogrid <- read.table(file="../../EXP-JDL-220/tmt analysis/biogrid/BIOGRID-MV-Physical-3.5.178.tab2.txt", header=T, sep='\t', comment.char = "", quote="")
+biogrid <- biogrid[,8:9]
+biogrid <- biogrid[!duplicated(biogrid),] # 103219 interactions total
+```
+
+```{r, eval=T, fig.width=5, fig.height=5}
+med_complex <- subset(biogrid, (Official.Symbol.Interactor.A %in% subset(bg_genes, uniprotswissprot %in% corum_list$`Mediator complex`)$external_gene_name & Official.Symbol.Interactor.B %in% subset(bg_genes, uniprotswissprot %in% corum_list$`Mediator complex`)$external_gene_name))
+
+g.med <- igraph::simplify(graph_from_edgelist(as.matrix(med_complex), directed=F))
+
+V(g.med)$fdr <- (subset(atra.dmso, GeneSymbol %in% V(g.med)$name)$adj.P.Val)[match(V(g.med)$name, subset(atra.dmso, GeneSymbol %in% V(g.med)$name)$GeneSymbol)]
+V(g.med)$lfc <- (subset(atra.dmso, GeneSymbol %in% V(g.med)$name)$logFC)[match(V(g.med)$name, subset(atra.dmso, GeneSymbol %in% V(g.med)$name)$GeneSymbol)]
+
+V(g.med)$lfc[is.na(V(g.med)$lfc)] <- 0
+V(g.med)$fdr[is.na(V(g.med)$fdr)] <- 0
+
+V(g.med)$color <- "gray"
+V(g.med)$color <- ifelse(V(g.med)$fdr < (0.05) & V(g.med)$lfc < 0, "indianred3", ifelse(V(g.med)$fdr < 0.2 & V(g.med)$lfc < 0, "mistyrose", "lightgray"))
+
+igraph.options(vertex.size=10, edge.arrow.size=0.5, edge.width=1)
+plot(g.med, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     edge.color = adjustcolor("black",alpha.f = .5),
+     vertex.label.family="Helvetica",
+     vertex.label.cex=0.001)
+```
+
+```{r, eval=T}
+# hpa localization
+hpa <- read.table(file="human protein atlas/subcellular_location.tsv", header=T, sep='\t')
+hpa_enhanced <- subset(hpa, Reliability %in% c("Enhanced", "Supported"))
+#hpa_enhanced <- merge(hpa_enhanced, entrezgenes, by.y=2, by.x=2)
+
+hpa_loc <- unique(c(as.character(hpa_enhanced$Enhanced), as.character(hpa_enhanced$Supported)))
+hpa_loc <- hpa_loc[!grepl(";", hpa_loc)]
+hpa_loc <- hpa_loc[which(hpa_loc != "")]
+
+hpa_list <- list()
+for(c in 1:length(hpa_loc)){
+  hpa_list[[c]] <- unique(subset(bg_genes, external_gene_name %in% hpa_enhanced[which(grepl(hpa_loc[c], paste(hpa_enhanced$Enhanced, hpa_enhanced$Supported))),2])$uniprotswissprot)
+  #hpa_list[[c]] <- c(as.character(hpa_enhanced[which(hpa_enhanced$Enhanced == hpa_loc[c] & hpa_enhanced$Supported == ""),2]))
+}
+names(hpa_list) <- hpa_loc
+```
+
+```{r, eval=T, fig.width=2.5, fig.height=1.8}
+fgsea_hpa <- fgsea(pathways=hpa_list, 
+                   stats=pos.neg.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_hpa$pathway <- factor(fgsea_hpa$pathway, levels=fgsea_hpa$pathway[(order(-log10(fgsea_hpa$padj) * sign(fgsea_hpa$NES)))])
+#fgsea_hpa <- fgsea_hpa[(order(fgsea_hpa$pathway)),]
+
+ggplot(fgsea_hpa, aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(NES)))  +
+  xlab("NB4 iDAPT-MS\nHuman Protein Atlas Subcellular Annotations") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="blue", high="red", name="NES", 
+                         breaks=c(-1, 0, 1,2, 3)) +
+  ylim(c(-1,3)) + geom_hline(yintercept=0, lwd=0.1) + geom_hline(yintercept=-log10(0.05), lty=3, lwd=0.5, color="red")
+
+```
+
+
+```{r, eval=T, fig.width=2.5, fig.height=1.8}
+fgsea_hpa <- fgsea(pathways=hpa_list, 
+                   stats=pos.neg.qnorm.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_hpa$pathway <- factor(fgsea_hpa$pathway, levels=fgsea_hpa$pathway[(order(-log10(fgsea_hpa$padj) * sign(fgsea_hpa$NES)))])
+#fgsea_hpa <- fgsea_hpa[(order(fgsea_hpa$pathway)),]
+
+ggplot(fgsea_hpa, aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(NES)))  +
+  xlab("NB4 iDAPT-MS\nHuman Protein Atlas Subcellular Annotations\nQuantile Normalization") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="blue", high="red", name="NES", 
+                         breaks=c(-1, 0, 1,2, 3)) +
+  ylim(c(-3,3)) + geom_hline(yintercept=0, lwd=0.1) + geom_hline(yintercept=c(log10(0.05),-log10(0.05)), lty=3, lwd=0.5, color="red")
+
+```
+
+```{r, eval=T, fig.width=3, fig.height=2}
+fgsea_hpa <- fgsea(pathways=hpa_list, 
+                   stats=atra.dmso.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_hpa$pathway <- factor(fgsea_hpa$pathway, levels=fgsea_hpa$pathway[rev(order(fgsea_hpa$pathway))])
+#fgsea_hpa <- fgsea_hpa[(order(fgsea_hpa$pathway)),]
+fgsea_hpa <- data.frame(fgsea_hpa)
+fgsea_hpa$NES[is.na(fgsea_hpa$NES)] <- 0
+
+ggplot(fgsea_hpa, aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(NES)))  +
+  xlab("Human Protein Atlas Subcellular Annotations") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="blue", high="red", name="NES", 
+                         breaks=c(-1, 0,  1,  2, 3)) +
+  ylim(c(-4,4)) + geom_hline(yintercept=0, lwd=0.1) + geom_hline(yintercept=c(log10(0.05),-log10(0.05)), lty=3, lwd=0.5, color="red")
+
+```
+
+```{r, eval=T}
+rdb <- reactomePathways(as.character(bg_genes$entrezgene_id)) # 19504 genes
+
+rdb_list <- list() # use uniprot ids for complex mapping
+for(c in 1:length(unique(names(rdb)))){
+  rdb_list[[c]] <- unique(subset(bg_genes, entrezgene_id %in% rdb[[c]] & uniprotswissprot != "")$uniprotswissprot)
+}
+names(rdb_list) <- unique(names(rdb))
+rdb_list <- rdb_list[which(!duplicated(rdb_list))]
+```
+
+```{r, eval=T, fig.width=5, fig.height=2}
+fgsea_rdb <- fgsea(pathways=rdb_list, 
+                   stats=pos.neg.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_rdb <- fgsea_rdb[order(fgsea_rdb$NES),]
+fgsea_rdb$pathway <- factor(fgsea_rdb$pathway, levels=unique(fgsea_rdb$pathway))
+
+ggplot(subset(fgsea_rdb, padj < 0.05), aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("ReactomeDB Pathway Enrichment") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="FDR", trans = "log",
+                         breaks=c(0.5, 0.05, 0.005, 0.0005, 0.00005)) +
+   geom_hline(yintercept=0, lwd=0.1)
+```
+
+```{r, eval=T, fig.width=5, fig.height=5}
+fgsea_rdb <- fgsea(pathways=rdb_list, 
+                   stats=atra.dmso.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_rdb <- fgsea_rdb[order(fgsea_rdb$NES),]
+fgsea_rdb$pathway <- factor(fgsea_rdb$pathway, levels=unique(fgsea_rdb$pathway))
+
+ggplot(subset(fgsea_rdb, padj < 0.03), aes(y = NES, x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("ReactomeDB Pathway Enrichment") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="FDR", trans = "log",
+                         breaks=c(0.5, 0.05, 0.005, 0.0005, 0.00005)) +
+  geom_hline(yintercept=0, lwd=0.1)
+```
+
+```{r, eval=T, fig.width=3.5, fig.height=2}
+include_pathways <- c("Oncogenic MAPK signaling", "Innate Immune System", "Detoxification of Reactive Oxygen Species", "Fcgamm receptor (FCGR) dependent phagocytosis", "RNA Pol II CTD phosphorylation and interaction with CE", "TRAF6 mediated NF-kB activation", "SUMOylation of chromatin organization proteins", "Conversion from APC/C:Cdc20 to APC/C:Cdh1 in late anaphase", "Phosphorylation of the APC/C", "APC/C:Cdc20 mediated degradation of Cyclin B", "APC-Cdc20 mediated degradation of Nek2A", "G0 and Early G1", "HDACs deacetylate histones")
+  
+  
+ggplot(subset(fgsea_rdb, pathway %in% include_pathways), aes(y = NES, x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Normalized Enrichment Score") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("ReactomeDB Pathway Enrichment") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="FDR", trans = "log",
+                         breaks=c(0.5, 0.05, 0.03, 0.02, 0.01, 0.005, 0.0005, 0.00005)) +
+  geom_hline(yintercept=0, lwd=0.1)
+```
+
+
+
+
+
+
+

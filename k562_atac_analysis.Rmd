@@ -1,0 +1,952 @@
+---
+title: "2019-04-06_atacseq_analysis"
+author: "Jonathan Lee"
+date: "4/6/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("preprocessCore")
+#biocLite()
+library(preprocessCore)
+#biocLite("sva")
+library(sva)
+#biocLite("limma")
+library(limma)
+#install.packages(c("wordcloud","tm"),repos="http://cran.r-project.org")
+#library(wordcloud)
+#library(tm)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+#biocLite("GO.db")
+library(GO.db)
+library(gProfileR)
+library(reactome.db)
+library(fgsea)
+library(biomaRt)
+#biocLite("org.Hs.eg.db")
+library(org.Hs.eg.db)
+library(dplyr)
+library(reshape2)
+library(pheatmap)
+library(clusterProfiler)
+#install.packages("rentrez")
+library(rentrez)
+library(igraph)
+```
+
+```{r, eval=T, fig.width=1.3, fig.height=1}
+for(f in list.files(path=".", pattern="insertsize2.txt")){
+  insertsize <- read.table(file=f, sep='\t', header=T)
+  #print(ggplot(insertsize, aes(x=size, y=count)) + geom_line() + theme_classic() + ylim(c(0,30000)) + xlim(c(0,1000)) + xlab("Insert Size (bp)") + ylab("# Reads") + ggtitle(strsplit(f, "_")[[1]][3])) 
+  print(ggplot(insertsize, aes(x=size, y=count)) + geom_line() + theme_classic()  + xlab("Insert Size (bp)") + ylab("# Reads") + ggtitle(strsplit(f, "_")[[1]][3])) #+ ylim(c(0,30000)) + xlim(c(0,1000))
+}
+```
+
+```{r, eval=T, fig.width=1, fig.height=1}
+tss_values <- NULL
+for(f in list.files(path=".", pattern="distToTSS.txt")){
+  tss <- read.table(file=f, sep=' ', header=T)
+  print(ggplot(tss, aes(x=Position/1000, y=Count)) + geom_line() + theme_classic() + ylim(c(0,11000)) + xlab("TSS Position (kb)") + ylab("# Reads") + ggtitle(strsplit(f, "_")[[1]][3])) 
+  tss_values <- rbind(tss_values, cbind(sample=f, tss=tss[2001,1]/mean(tss[1:200,1])))
+}
+```
+
+```{r, eval=T}
+tss_values <- data.frame(tss_values)
+tss_values$tss <- as.numeric(as.character(tss_values$tss))
+```
+
+```{r, eval=T}
+tss_values$sample <- c("Naked DNA 1", "Naked DNA 2", "Naked DNA 3", "Native Chromatin 1", "Native Chromatin 2", "Native Chromatin 3")
+tss_values$sample <- factor(tss_values$sample, levels=rev(tss_values$sample))
+```
+
+```{r, eval=T, fig.width=2, fig.height=1}
+ggplot(tss_values, aes(x=sample, y=tss)) + geom_bar(stat="identity") + theme_classic() + geom_hline(yintercept=0) + coord_flip() + xlab("") + ylab("TSS-to-Background\nInsertion Ratio")
+```
+
+
+
+```{r, eval=T, fig.width=2, fig.height=1}
+nonmito_prop <- NULL
+for(f in list.files(path=".", pattern="mito.log")){
+  nonmito_prop <- rbind(nonmito_prop, cbind(sample=f, prop=as.character(tail(read.table(file=f),1)$V5)))
+}
+
+nonmito_prop <- data.frame(nonmito_prop)
+nonmito_prop$prop <- as.numeric(as.character(nonmito_prop$prop))
+
+nonmito_prop$sample <- c("Naked DNA 1", "Naked DNA 2", "Naked DNA 3", "Native Chromatin 1", "Native Chromatin 2", "Native Chromatin 3")
+nonmito_prop$sample <- factor(nonmito_prop$sample, levels=rev(nonmito_prop$sample))
+
+ggplot(nonmito_prop, aes(x=sample, y=prop)) + geom_point() + ylim(c(0,1)) + theme_classic() + xlab("") + ylab("Non-Mitochondrial\nRead Proportion") + coord_flip()
+```
+
+```{r, eval=T, fig.width=2, fig.height=1.5}
+peakanno <- NULL
+for(f in list.files(path=".", pattern="5000000.annstats.txt")){
+  peakanno <- rbind(peakanno, cbind(sample=f, anno=as.character(head(read.table(file=f, sep='\t', header=T),5)[,1]), ratio=as.numeric(as.character(head(read.table(file=f, sep='\t', header=T),5)[,4]))))
+}
+
+peakanno <- data.frame(peakanno)
+peakanno$ratio <- as.numeric(as.character(peakanno$ratio))
+
+peakanno$sample <- c("Naked DNA 1", "Naked DNA 2", "Naked DNA 3", "Native Chromatin 1", "Native Chromatin 2", "Native Chromatin 3")[match(peakanno$sample, unique(peakanno$sample))]
+peakanno$sample <- factor(peakanno$sample, levels=unique(peakanno$sample))
+#peakanno$anno <- factor(peakanno$anno, levels=rev(unique(peakanno$anno))
+
+ggplot(peakanno, aes(x=anno, y=ratio, fill=factor(sample, levels=rev(unique(sample))))) + geom_bar(stat="identity", position="dodge") + theme_classic() + scale_fill_brewer(palette="Spectral", limits=(unique(as.character(peakanno$sample)))) + ylab("Log2 Fold Change") + guides(fill=guide_legend(title="Sample")) + geom_hline(yintercept=0, lty=3) + coord_flip() + xlab("Annotation")
+```
+
+
+```{r, eval=T}
+atacseq_counts <- read.table(file="k562_atacseq_counts.txt", header=T)
+atacseq_counts <- atacseq_counts[,1:7]
+colnames(atacseq_counts) <- c("position", "gDNA1", "gDNA2", "gDNA3", "TP3_1", "TP3_2", "TP3_3")
+atacseq_counts <- atacseq_counts[!duplicated(atacseq_counts),]
+row.names(atacseq_counts) <- atacseq_counts[,1]
+atacseq_counts <- atacseq_counts[,-1]
+```
+
+
+```{r, eval=T}
+# create treatment sample matrix
+atacseq_sample <- data.frame(sample = c(rep("gDNA",3), rep("TP3",3)),
+                     row.names = c("gDNA1", "gDNA2", "gDNA3", "TP3_1", "TP3_2", "TP3_3"))
+```
+
+
+```{r, eval=T}
+library(DESeq2)
+atacseq_dds <- DESeqDataSetFromMatrix(countData = atacseq_counts, colData = atacseq_sample, design = ~sample)
+atacseq_dds <- estimateSizeFactors(atacseq_dds)
+atacseq_dds <- DESeq(atacseq_dds)
+```
+
+```{r, eval=T}
+atacseq_vst <- assay(varianceStabilizingTransformation(atacseq_dds))
+#atacseq_vst <- atacseq_vst[atac_results$position,]
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+hist(rowMeans(atacseq_vst))
+
+atacseq_pc <- prcomp(t(atacseq_vst))
+ggplot(data.frame(atacseq_pc$x, Sample=c(rep("Naked DNA",3), rep("Native Chromatin",3)), Name=c(paste0("Naked DNA ",1:3), paste0("Native\nChromatin ",1:3))), aes(PC1, PC2)) + 
+  geom_point(aes(colour = Sample), size=3)  + theme_classic() + geom_text_repel(aes(label=Name)) + xlab(paste0("PC1 (", 100*summary(atacseq_pc)$importance[2,1], "% of variance)")) + ylab(paste0("PC2 (", 100*summary(atacseq_pc)$importance[2,2], "% of variance)")) + geom_vline(xintercept=0, lty=3, color="red") + theme(legend.position="none")
+```
+
+```{r, eval=T}
+atac_results <- results(atacseq_dds,contrast=c("sample", "TP3", "gDNA"), independentFiltering = F, cooksCutoff = Inf)
+
+atac_results_shrunk <- lfcShrink(atacseq_dds,contrast=c("sample", "TP3", "gDNA"), res=atac_results)
+atac_results_shrunk <- data.frame(atac_results_shrunk )
+atac_results_shrunk$position <- row.names(atac_results_shrunk)
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1}
+ggplot(atac_results_shrunk, aes(x=log2FoldChange, y=-log10(padj))) + geom_point(pch=20, color="lightgray", alpha=0.2, data=subset(atac_results_shrunk, padj > 0.05 & log2FoldChange > 0)) + geom_point(pch=20, color="indianred", data=subset(atac_results_shrunk, padj < 0.05 & log2FoldChange > 0), alpha=0.2) + geom_point(pch=20, color="skyblue", data=subset(atac_results_shrunk, log2FoldChange < 0), alpha=0.2) + theme_classic() + geom_hline(yintercept=0, lty=3) +
+  geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red") + xlab("Log2 Fold Change, K562 iDAPT-seq\nNative Chromatin vs. Naked DNA") + ylab("-Log10 FDR")# + xlim(c(-8,8)) # + 
+ # geom_text_repel(data=subset(atac_results, padj < 1e-3 & abs(log2FoldChange) > 2 & baseMean > 100 | padj < 1e-9 & baseMean > 100), aes(label=position), size=2, segment.color="black", force=5, segment.alpha=0.8, segment.size=0.1)
+```
+
+```{r, eval=T}
+dim(atac_results)
+dim(subset(atac_results, log2FoldChange > 0 & padj < 0.05))
+dim(subset(atac_results, log2FoldChange < 0))
+```
+
+```{r, eval=T}
+bagfoot <- read.table(file="2019-10-28_bagfoot.k562_base.all.txt")
+```
+
+```{r, eval=T}
+bagfoot$tx <- ifelse(grepl("S13", bagfoot$V1) | grepl("S14", bagfoot$V1) | grepl("S15", bagfoot$V1), "nuclei", "gDNA")
+
+tmp <- NULL
+for(s in strsplit(as.character(bagfoot$V2), "_")){tmp <- c(tmp, s[3])}
+bagfoot$tf <- tmp
+
+bagfoot$proj <- (as.matrix(bagfoot[,c("V3","V4")]) %*% as.matrix(c(1,-1)) / sqrt(2))[,1]
+
+```
+
+```{r, eval=T, fig.width=1.8, fig.height=1.8}
+library("mixtools")
+
+
+subset(diff.bf, grepl("TAL", motif))
+subset(diff.bf, grepl("GATA", motif))
+
+ggplot(diff.bf, aes(x=V3, y=V4, color=class)) + geom_point(alpha=0.8) + xlab("Change in Flanking Accessibility (FA),\nMutant vs. Wild Type IDH2") + ylab("Change in Footprint Depth (FPD),\nMutant vs. Wild Type IDH2") + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_vline(xintercept=0, lty=3) + scale_color_manual(values=c("royalblue3","indianred3")) + theme(legend.position="none") + geom_abline(slope=-1, intercept=0, lty=3, color="black") + geom_text(data=subset(diff.bf, grepl("GATA", motif) | grepl("TAL1", motif)), aes(label=motif))
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+bf_mini <- bagfoot
+bf_mini$tx <- factor(bf_mini$tx)
+bf_mini$tf <- factor(bf_mini$tf)
+
+mod <- lm(proj ~ tf + tx:tf, data=bf_mini)
+
+mod_sum <- data.frame(summary(mod)$coefficients)
+mod_sum <- mod_sum[which(grepl(":txnuclei",row.names(mod_sum))),]
+mod_sum$tf <- unlist(strsplit(substrLeft(row.names(mod_sum), 9), "tf"))[c(F,T)]
+mod_sum$bonferroni <- p.adjust(mod_sum$Pr...t.., method="bonferroni")
+
+mod_sum$fdr <- p.adjust(mod_sum$Pr...t.., method="fdr")
+mod_sum$class <- ifelse(mod_sum$fdr < 0.05, "red", "blue")
+
+tmp <- c()
+
+for(m in mod_sum$tf){
+  tmp <- rbind(tmp, colMeans(subset(bagfoot, tf == m & (grepl("S13", V1) | grepl("S14", V1) | grepl("S15", V1)))[,3:4]) - colMeans(subset(bagfoot, tf == m & (grepl("S10", V1) | grepl("S11", V1) | grepl("S12", V1)))[,3:4]))
+}
+
+mod_sum$fpd <- tmp[,2]
+mod_sum$fa <- tmp[,1]
+
+library(mixtools)
+
+set.seed(8)
+mixmdl <- normalmixEM(mod_sum$t.value, k = 2, epsilon=1e-3, maxit = 3000)
+
+plot_mix_comps <- function(x, mu, sigma, lam) {
+  lam * dnorm(x, mu, sigma)
+}
+
+data.frame(x = mixmdl$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 3, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[1], mixmdl$sigma[1], lam = mixmdl$lambda[1]),
+                colour = "skyblue3", lwd = 0.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[2], mixmdl$sigma[2], lam = mixmdl$lambda[2]),
+                colour = "indianred3", lwd = 0.5) +
+  ylab("Density") + theme_classic() + xlab("K562 Nuclei vs. gDNA\nComposite Footprinting Score") + geom_vline(xintercept=c(max(subset(mod_sum, fdr < 0.05 & t.value < 0)$t.value), min(subset(mod_sum, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red")
+
+mod_sum$mixclass <- ifelse(mixmdl$posterior[,2] > 0.5, "high", ifelse(mod_sum$fdr > 0.05 | mod_sum$t.value < 0, "low", "mid"))
+#diff.bf$pc1 <- pca.bf$rotation[,1]
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+data.frame(x = mod_sum$t.value) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 3, colour = "black", 
+                 fill = "white") +
+  ylab("Density") + theme_classic() + xlab("K562 Nuclei vs. gDNA\nComposite Footprinting Score") + geom_vline(xintercept=c(max(subset(mod_sum, fdr < 0.05 & t.value < 0)$t.value), min(subset(mod_sum, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red")
+```
+
+```{r, eval=T, fig.width=1.7, fig.height=1.7}
+ggplot(mod_sum, aes(x=fa, y=fpd, color=mixclass)) + geom_point(alpha=0.2) + xlab("Change in Flanking Accessibility (FA),\nNative Chromatin vs. Naked DNA") + ylab("Change in Footprint Depth (FPD),\nNative Chromatin vs. Naked DNA") + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_vline(xintercept=0, lty=3) + scale_color_manual(values=c("indianred3", "gray75", "skyblue3")) + theme(legend.position="none") + geom_abline(slope=-1, intercept=0, lty=3, color="black") + geom_text_repel(data=subset(mod_sum, tf %in% c("CTCF", "CREB1", "RELA", "TAL1", "GATA1", "GATA2", "TCF3", "ZEB1", "CUX1", "MAX", "MYC", "IKZF1")), aes(label=tf), color="black") + geom_point(data=subset(mod_sum, tf %in% c("CTCF", "CREB1", "RELA", "TAL1", "GATA1", "GATA2", "TCF3", "ZEB1", "CUX1", "MAX", "MYC", "IKZF1")), color="black", pch=1)
+```
+
+```{r, eval=T}
+k562_pos.neg <- read.table(file="../../../DATA/EXP-JDL-391/TMT/tmt analysis/k562_posneg.txt", header=T, sep='\t')
+row.names(k562_pos.neg) <- k562_pos.neg[,1]
+k562_pos.neg <- k562_pos.neg[,-1]
+```
+
+```{r, eval=T}
+bg_genes <- getBM(attributes= c("entrezgene_id", "uniprotswissprot", "external_gene_name"),
+                      mart = useDataset("hsapiens_gene_ensembl", useMart("ensembl")))
+bg_genes <- subset(bg_genes, entrezgene_id != "" | uniprotswissprot != "")
+#bg_genes <- data.frame(ont="background", gene=as.character(unique(subset(bg_genes, uniprotswissprot != "")$entrezgene)), stringsAsFactors = F)
+```
+
+```{r, eval=T}
+fpd.ms <- merge(k562_pos.neg, mod_sum, by.x="GeneSymbol", by.y="tf") # 284 tfs
+#fpd.ms <- subset(fpd.ms, name %in% subset(bg_genes, ensembl_gene_id %in% names(which(rnaseq_median>0)))$external_gene_name) # 283 tfs
+```
+
+```{r, eval=T, fig.width=2.5, fig.height=2.5}
+ggplot(fpd.ms, aes(y=t.value, x=logFC)) + geom_point(data=subset(fpd.ms, mixclass=="high" & logFC > 0 & adj.P.Val < 0.05), color="indianred3", alpha=0.5) + geom_point(data=subset(fpd.ms, mixclass=="mid" & adj.P.Val < 0.05), color="skyblue3", alpha=0.5) + geom_point(data=subset(fpd.ms, mixclass=="low" & adj.P.Val < 0.05), color="gray75", alpha=0.5) + geom_point(data=subset(fpd.ms, adj.P.Val > 0.05), color="gray", alpha=0.2) + theme_classic() + geom_vline(xintercept=c(max(subset(fpd.ms, adj.P.Val < 0.05 & logFC < 0)$logFC), min(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0)$logFC)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.2) + geom_hline(yintercept=c(min(-subset(fpd.ms, fdr < 0.05 & t.value < 0)$t.value), max(-subset(fpd.ms, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red") + ylab("Footprinting Composite Score\nK562 Nuclei vs. gDNA iDAPT-seq") + xlab("Log2 Fold Change\nK562 Fusion vs. Control iDAPT-MS") + geom_point(data=subset(fpd.ms, GeneSymbol %in% c("CTCF", "CREB1", "RELA", "TAL1", "GATA1", "GATA2", "TCF3", "ZEB1", "CUX1", "MAX", "MYC", "IKZF1")), pch=1) + geom_text_repel(data=subset(fpd.ms, GeneSymbol %in% c("CTCF", "CREB1", "RELA", "TAL1", "GATA1", "GATA2", "TCF3", "ZEB1", "CUX1", "MAX", "MYC", "IKZF1")), aes(label=GeneSymbol), force=5, segment.alpha = 0.2) + coord_flip()
+```
+
+```{r, eval=T}
+### helper function ####
+substrLeft <- function(x, n){
+  substr(x, 1, nchar(x)-n)
+}
+########################
+fname <- list.files(path="chipseq_peaks/")
+
+chip_list <- list()
+
+for(f in fname){
+  chip_list[[substrLeft(f, 14)]] <- read.table(file=paste0("chipseq_peaks/",f))$V1
+}
+```
+
+```{r, eval=T}
+atac.ranks <- atac_results_shrunk$log2FoldChange
+names(atac.ranks) <- atac_results_shrunk$position
+```
+
+```{r, eval=T}
+fgsea_chipseq <- fgsea(pathways=chip_list, 
+                   stats=atac.ranks, 
+                   minSize = 5,
+                   nperm=10000,
+                   nproc=8)
+fgsea_chipseq <- fgsea_chipseq[order(fgsea_chipseq$NES),]
+fgsea_chipseq$pathway <- factor(fgsea_chipseq$pathway, levels=unique(fgsea_chipseq$pathway))
+```
+
+```{r, eval=T}
+fgsea_chipseq$gene <- str_replace_all(str_replace_all(str_replace_all(as.character(fgsea_chipseq$pathway), "eGFP-",""), "3xFLAG-",""),"[-human].*","")
+```
+
+```{r, eval=T}
+fgsea_results <- data.frame(fgsea_chipseq[,c(9,1:7)], encode=unlist(str_split(as.character(fgsea_chipseq$pathway), "_"))[c(F,T)])
+#write.table(fgsea_results, file="table4.txt", row.names=F, col.names=T, sep='\t', quote=F)
+```
+
+```{r, eval=T}
+subset(fgsea_results, gene %in% c("GATA1", "GATA2", "TAL1"))
+```
+
+```{r, eval=T}
+subset(fgsea_chipseq, gene=="CTCF")
+subset(fgsea_chipseq, gene=="IKZF1")
+subset(fgsea_chipseq, gene=="RELA")
+
+```
+
+
+```{r, eval=T, fig.width=1.5, fig.height=1}
+library(fgsea)
+# random 2000 peaks from ChIP-seq
+set.seed(1)
+plotEnrichment(sample(chip_list$`TAL1-human_ENCFF078OUD`, 2000), atac.ranks[!is.na(atac.ranks)]) + ylab("Enrichment Score") + xlab("Peak Rank")
+plotEnrichment(sample(chip_list$`TAL1-human_ENCFF475LFH`, 2000), atac.ranks[!is.na(atac.ranks)]) + ylab("Enrichment Score") + xlab("Peak Rank")
+plotEnrichment(sample(chip_list$`GATA1-human_ENCFF148JKK`, 2000), atac.ranks[!is.na(atac.ranks)]) + ylab("Enrichment Score") + xlab("Peak Rank")
+plotEnrichment(sample(chip_list$`GATA1-human_ENCFF576YJD`, 2000), atac.ranks[!is.na(atac.ranks)]) + ylab("Enrichment Score") + xlab("Peak Rank")
+subset(fgsea_chipseq, gene %in% c("TAL1", "GATA1"))
+```
+
+```{r, eval=T}
+summary(fgsea_chipseq)
+```
+
+
+```{r, eval=T, fig.width=5, fig.height=3}
+ggplot(head(subset(fgsea_chipseq, padj < 0.05), 20), aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Normalized Enrichment Score") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("CORUM Complex Enrichment") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="FDR", trans = "log") + #, breaks=c(0.5, 0.05, 0.005, 0.0005, 0.00005)) +
+  geom_hline(yintercept=0, lwd=0.1)
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1}
+library(fgsea)
+# random 2000 peaks from ChIP-seq
+set.seed(1)
+
+plotEnrichment(sample(chip_list$`ZNF274-human_ENCFF323AWS`, 50), atac.ranks[!is.na(atac.ranks)]) + ylab("Enrichment Score") + xlab("Peak Rank")
+plotEnrichment(sample(chip_list$`ZNF274-human_ENCFF498VQZ`, 200), atac.ranks[!is.na(atac.ranks)]) + ylab("Enrichment Score") + xlab("Peak Rank")
+subset(fgsea_chipseq, gene %in% c("ZNF274"))
+```
+
+```{r, eval=T}
+ggplot(subset(data.frame(fgsea_chipseq), gene %in% bg_genes$external_gene_name), aes(x=1, y=-log10(padj)*sign(NES))) + geom_boxplot()# + geom_jitter()
+```
+
+ChIP-seq = 326 protein epitopes...
+
+```{r, eval=T}
+length(intersect( mod_sum$tf, bg_genes$external_gene_name)) # 764 motifs are "real" genes...
+
+# ChIP-seq vs. iDAPT-seq
+length(intersect(fgsea_chipseq$gene, bg_genes$external_gene_name)) # 326 proteins tested by ChIP-seq
+length(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, bg_genes$external_gene_name)) # 324 ChIP-seq proteins detected on OC
+
+length(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, mod_sum$tf)) # 134 / 324 proteins are motif-containing + tested
+
+length(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(mod_sum, mixclass=="low")$tf)) # 11
+length(intersect(subset(mod_sum, mixclass=="low")$tf, bg_genes$external_gene_name)) # 175
+
+length(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(mod_sum, mixclass=="high")$tf)) # 58
+length(intersect(subset(mod_sum, mixclass=="high")$tf, bg_genes$external_gene_name)) # 145
+
+length(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(mod_sum, mixclass=="mid")$tf)) # 65
+length(intersect(subset(mod_sum, mixclass=="mid")$tf, bg_genes$external_gene_name)) # 444
+
+
+# iDAPT-MS vs. iDAPT-seq
+length(intersect(k562_pos.neg$GeneSymbol, bg_genes$external_gene_name)) # 6009 tested by iDAPT-MS
+length(intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, bg_genes$external_gene_name)) # 3447 iDAPT-MS proteins detected on OC
+
+length(intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, mod_sum$tf)) # 136 / 3447 proteins are motif-containing + detected
+
+length(intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, subset(mod_sum, mixclass=="low")$tf)) # 21
+length(intersect(subset(mod_sum, mixclass=="low")$tf, bg_genes$external_gene_name)) # 175
+
+length(intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, subset(mod_sum, mixclass=="high")$tf)) # 45
+length(intersect(subset(mod_sum, mixclass=="high")$tf, bg_genes$external_gene_name)) # 145
+
+length(intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, subset(mod_sum, mixclass=="mid")$tf)) # 70
+length(intersect(subset(mod_sum, mixclass=="mid")$tf, bg_genes$external_gene_name)) # 444
+
+```
+
+```{r, eval=T}
+intersect(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(mod_sum, mixclass=="high")$tf), intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, mod_sum$tf))
+
+intersect(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(mod_sum, mixclass=="mid")$tf), intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, mod_sum$tf))
+
+intersect(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(mod_sum, mixclass=="low")$tf), intersect(subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol, mod_sum$tf))
+```
+
+```{r, eval=T}
+sort(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol)) # 200 overlapping proteins between ChIP and MS...
+
+sort(intersect(intersect(subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene, subset(k562_pos.neg, adj.P.Val < 0.05 & logFC > 0)$GeneSymbol), mod_sum$tf)) # 200 overlapping proteins between ChIP and MS...
+```
+
+```{r, eval=T}
+#biogrid <- read.table(file="../../../EXP-JDL-220/tmt analysis/biogrid/BIOGRID-MV-Physical-3.5.166.tab2.txt", header=T, sep='\t', comment.char = "", quote="")
+biogrid <- read.table(file="../../../DATA/EXP-JDL-220/tmt analysis/biogrid/BIOGRID-MV-Physical-3.5.178.tab2.txt", header=T, sep='\t', comment.char = "", quote="")
+biogrid <- biogrid[,8:9]
+biogrid <- biogrid[!duplicated(biogrid),] # 103219 interactions total
+
+biogrid_filt <- subset(biogrid, Official.Symbol.Interactor.A %in% k562_pos.neg$GeneSymbol &  Official.Symbol.Interactor.B %in% k562_pos.neg$GeneSymbol)
+```
+
+# top ssTF complexes from ChIP-seq -> test if complexes are enriched on OC in MS...
+
+
+```{r, eval=T}
+uniq_biogrid <- unique(c(as.character(biogrid_filt$Official.Symbol.Interactor.A), as.character(biogrid_filt$Official.Symbol.Interactor.B)))
+
+biogrid_list <- list()
+for(c in 1:length(uniq_biogrid)){
+    biogrid_list[[c]] <- unique(c(as.character(biogrid_filt[which(biogrid_filt$Official.Symbol.Interactor.A == uniq_biogrid[c]),2]), 
+                          as.character(biogrid_filt[which(biogrid_filt$Official.Symbol.Interactor.B == uniq_biogrid[c]),1]), 
+                          uniq_biogrid[c]))
+}
+
+names(biogrid_list) <- paste0(k562_pos.neg[match(uniq_biogrid, as.character(k562_pos.neg$GeneSymbol)),]$GeneSymbol,"_complex")
+biogrid_list <- biogrid_list[which(!duplicated(biogrid_list))]
+```
+
+
+```{r, eval=T}
+pos.neg.ranks <- k562_pos.neg$logFC
+names(pos.neg.ranks) <- k562_pos.neg$GeneSymbol
+```
+
+
+```{r, eval=T}
+fgsea_biogrid <- fgsea(pathways=biogrid_list, 
+                   stats=pos.neg.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_biogrid <- fgsea_biogrid[order(fgsea_biogrid$NES),]
+fgsea_biogrid$pathway <- factor(fgsea_biogrid$pathway, levels=unique(fgsea_biogrid$pathway))
+```
+
+```{r, eval=T}
+### helper function ####
+substrLeft <- function(x, n){
+  substr(x, 1, nchar(x)-n)
+}
+```
+
+```{r, eval=T, fig.width=2.5, fig.height=2}
+ggplot(subset(fgsea_biogrid, pval < 0.05 & substrLeft(as.character(pathway), 8) %in% diff.bf$name), aes(y = NES, x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Normalized Enrichment Score") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("Significant BioGrid Complexes") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="p-value", trans = "log",
+                         breaks=c(0.05, 0.005, 0.0005, 0.00005)) +
+  ylim(c(-1,3)) + geom_hline(yintercept=0, lwd=0.1)
+```
+
+```{r, eval=T}
+cmp_tfs <- as.character(subset(fgsea_biogrid, pval < 0.05 & substrLeft(as.character(pathway), 8) %in% mod_sum$tf & substrLeft(as.character(pathway), 8) %in% subset(fgsea_chipseq,  NES > 0 & padj < 0.05)$gene)$pathway)
+```
+
+```{r, eval=T}
+intersect(biogrid_list[["TAL1_complex"]], fgsea_chipseq$gene)
+intersect(biogrid_list[["MAX_complex"]], fgsea_chipseq$gene)
+```
+
+```{r, eval=T}
+gix <- c()
+for(g in intersect(biogrid_list[["TAL1_complex"]], fgsea_chipseq$gene)){
+  gix <- c(gix, names(chip_list)[which(grepl(g, names(chip_list)))])
+}
+
+for(g in gix){
+  print(paste("TAL1-human_ENCFF078OUD", g, 
+              length(chip_list$`TAL1-human_ENCFF078OUD`),
+              length(intersect(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])),
+              length(chip_list[[g]]),
+              length(intersect(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) / length(chip_list$`TAL1-human_ENCFF078OUD`),
+              length(intersect(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) / length(chip_list[[g]])))
+}
+
+for(g in gix){
+  print(paste("TAL1-human_ENCFF475LFH", g, 
+              length(chip_list$`TAL1-human_ENCFF475LFH`),
+              length(intersect(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])),
+              length(chip_list[[g]]),
+              length(intersect(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) / length(chip_list$`TAL1-human_ENCFF475LFH`),
+              length(intersect(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) / length(chip_list[[g]])))
+}
+```
+
+```{r, eval=T}
+gix <- c()
+for(g in intersect(biogrid_list[["TAL1_complex"]], fgsea_chipseq$gene)){
+  gix <- c(gix, names(chip_list)[which(grepl(g, names(chip_list)))]) # unique(gix)
+}
+
+tal1_chip <- c()
+for(g in gix){
+  tal1_chip <- rbind(tal1_chip, cbind(jaccard=length(intersect(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) / (length(intersect(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) + length(setdiff(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`TAL1-human_ENCFF078OUD`))), name="TAL1\nChIP 1", chip=g))
+}
+
+for(g in gix){
+   tal1_chip <- rbind(tal1_chip, cbind(jaccard=length(intersect(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) / (length(intersect(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) + length(setdiff(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`TAL1-human_ENCFF475LFH`))), name="TAL1\nChIP 2", chip=g))
+}
+
+gix <- setdiff(names(chip_list), gix)
+
+for(g in gix){
+  tal1_chip <- rbind(tal1_chip, cbind(jaccard=length(intersect(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) / (length(intersect(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) + length(setdiff(chip_list$`TAL1-human_ENCFF078OUD`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`TAL1-human_ENCFF078OUD`))), name="TAL1\nChIP 1\nBG", chip=g))
+}
+
+for(g in gix){
+  tal1_chip <- rbind(tal1_chip, cbind(jaccard=length(intersect(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) / (length(intersect(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) + length(setdiff(chip_list$`TAL1-human_ENCFF475LFH`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`TAL1-human_ENCFF475LFH`))), name="TAL1\nChIP 2\nBG", chip=g))
+}
+
+```
+
+```{r, eval=T}
+tal1_chip <- data.frame(tal1_chip)
+tal1_chip$jaccard <- as.numeric(as.character(tal1_chip$jaccard))
+tal1_chip <- subset(tal1_chip, jaccard != 1)
+```
+
+```{r, eval=T}
+wilcox.test(x=subset(tal1_chip, name == "TAL1\nChIP 1")$jaccard, y=subset(tal1_chip, name == "TAL1\nChIP 1\nBG")$jaccard)
+wilcox.test(x=subset(tal1_chip, name == "TAL1\nChIP 2")$jaccard, y=subset(tal1_chip, name == "TAL1\nChIP 2\nBG")$jaccard)
+```
+
+```{r, eval=T, fig.width=1.3, fig.height=2}
+ggplot(tal1_chip, aes(x=name, y=jaccard)) + geom_boxplot() + geom_point(data=subset(tal1_chip, grepl("TAL1", chip)), color="red", size=3, alpha=0.8) + ylab("Jaccard Index") + xlab("") + theme_classic() + geom_hline(yintercept=0, lty=3) + ylim(c(0,0.7))
+# TAL1 ChIP #1 (ENCFF078OUD)
+# TAL1 ChIP #2 (ENCFF475LFH)
+```
+
+
+
+```{r, eval=T}
+gix <- c()
+for(g in intersect(biogrid_list[["MAX_complex"]], fgsea_chipseq$gene)){
+  gix <- c(gix, names(chip_list)[which(grepl(g, names(chip_list)))]) # unique(gix)
+}
+
+max_chip <- c()
+for(g in gix){
+  max_chip <- rbind(max_chip, cbind(jaccard=length(intersect(chip_list$`MAX-human_ENCFF618VMC`, chip_list[[g]])) / (length(intersect(chip_list$`MAX-human_ENCFF618VMC`, chip_list[[g]])) + length(setdiff(chip_list$`MAX-human_ENCFF618VMC`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`MAX-human_ENCFF618VMC`))), name="MAX\nChIP 1", chip=g))
+}
+
+for(g in gix){
+   max_chip <- rbind(max_chip, cbind(jaccard=length(intersect(chip_list$`MAX-human_ENCFF900NVQ`, chip_list[[g]])) / (length(intersect(chip_list$`MAX-human_ENCFF900NVQ`, chip_list[[g]])) + length(setdiff(chip_list$`MAX-human_ENCFF900NVQ`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`MAX-human_ENCFF900NVQ`))), name="MAX\nChIP 2", chip=g))
+}
+
+gix <- setdiff(names(chip_list), gix)
+
+for(g in gix){
+  max_chip <- rbind(max_chip, cbind(jaccard=length(intersect(chip_list$`MAX-human_ENCFF618VMC`, chip_list[[g]])) / (length(intersect(chip_list$`MAX-human_ENCFF618VMC`, chip_list[[g]])) + length(setdiff(chip_list$`MAX-human_ENCFF618VMC`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`MAX-human_ENCFF618VMC`))), name="MAX\nChIP 1\nBG", chip=g))
+}
+
+for(g in gix){
+  max_chip <- rbind(max_chip, cbind(jaccard=length(intersect(chip_list$`MAX-human_ENCFF900NVQ`, chip_list[[g]])) / (length(intersect(chip_list$`MAX-human_ENCFF900NVQ`, chip_list[[g]])) + length(setdiff(chip_list$`MAX-human_ENCFF900NVQ`, chip_list[[g]])) + length(setdiff(chip_list[[g]], chip_list$`MAX-human_ENCFF900NVQ`))), name="MAX\nChIP 2\nBG", chip=g))
+}
+
+```
+
+```{r, eval=T}
+max_chip <- data.frame(max_chip)
+max_chip$jaccard <- as.numeric(as.character(max_chip$jaccard))
+max_chip <- subset(max_chip, jaccard != 1)
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.8}
+ggplot(max_chip, aes(x=name, y=jaccard)) + geom_boxplot() + geom_point(data=subset(max_chip, grepl("MAX", chip)), color="red", size=3, alpha=0.8) + ylab("Jaccard Index") + xlab("") + theme_classic() + geom_hline(yintercept=0, lty=3) + ylim(c(0,0.7))
+# MAX ChIP #1 (ENCFF618VMC)
+# MAX ChIP #2 (ENCFF900NVQ)
+```
+
+```{r, eval=T}
+wilcox.test(x=subset(max_chip, name == "MAX\nChIP 1")$jaccard, y=subset(max_chip, name == "MAX\nChIP 1\nBG")$jaccard)
+wilcox.test(x=subset(max_chip, name == "MAX\nChIP 2")$jaccard, y=subset(max_chip, name == "MAX\nChIP 2\nBG")$jaccard)
+```
+
+```{r, eval=T}
+table_s3 <- data.frame(fgsea_chipseq[,c(9,1:7)])
+colnames(table_s3)[1:2] <- c("Gene Symbol", "ENCODE ChIP-seq")
+write.table(table_s3, file="Data_S3_ENCODE.txt", row.names=F, quote=F, sep='\t')
+```
+
+
+```{r, eval=T}
+for( cmp in cmp_tfs){
+  print(paste(cmp, length(intersect(biogrid_list[[cmp]], fgsea_chipseq$gene)) / length(biogrid_list[[cmp]])))
+}
+```
+
+```{r, eval=T}
+# 1. convert chip peaks into binary features on atac peaks
+# 2. 
+```
+
+```{r, eval=T, fig.width=3, fig.height=3}
+goi <- "TAL1"
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A == goi | Official.Symbol.Interactor.B == goi)
+cmp1 <- subset(k562_pos.neg, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05), "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.2, "lightblue1", "lightgray"))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+V(g.cmp1)$frame.color <- ifelse(V(g.cmp1)$name %in% fgsea_chipseq$gene, "red", "black")
+
+igraph.options(vertex.size=25, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.6)
+
+```
+
+```{r, eval=T, fig.width=3, fig.height=3}
+goi <- "MAX"
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A == goi | Official.Symbol.Interactor.B == goi)
+cmp1 <- subset(k562_pos.neg, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(k562_pos.neg, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05), "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.2, "lightblue1", "lightgray"))
+#V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "fcircle")
+V(g.cmp1)$frame.color <- ifelse(V(g.cmp1)$name %in% fgsea_chipseq$gene, "red", "black")
+V(g.cmp1)$vertex.frame.width <- ifelse(V(g.cmp1)$name %in% fgsea_chipseq$gene, 2, 1)
+
+mycircle <- function(coords, v=NULL, params) {
+  vertex.color <- params("vertex", "color")
+  if (length(vertex.color) != 1 && !is.null(v)) {
+    vertex.color <- vertex.color[v]
+  }
+  vertex.size  <- 1/200 * params("vertex", "size")
+  if (length(vertex.size) != 1 && !is.null(v)) {
+    vertex.size <- vertex.size[v]
+  }
+  vertex.frame.color <- params("vertex", "frame.color")
+  if (length(vertex.frame.color) != 1 && !is.null(v)) {
+    vertex.frame.color <- vertex.frame.color[v]
+  }
+  vertex.frame.width <- params("vertex", "frame.width")
+  if (length(vertex.frame.width) != 1 && !is.null(v)) {
+    vertex.frame.width <- vertex.frame.width[v]
+  }
+  
+  mapply(coords[,1], coords[,2], vertex.color, vertex.frame.color,
+         vertex.size, vertex.frame.width,
+         FUN=function(x, y, bg, fg, size, lwd) {
+           symbols(x=x, y=y, bg=bg, fg=fg, lwd=lwd,
+                   circles=size, add=TRUE, inches=FALSE)
+         })
+}
+
+add.vertex.shape("fcircle", clip=igraph.shape.noclip,
+		 plot=mycircle, parameters=list(vertex.frame.color=1,
+                                  vertex.frame.width=1))
+
+igraph.options(vertex.size=25)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,  
+     vertex.shape="fcircle", 
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.6,
+     vertex.frame.width = V(g.cmp1)$vertex.frame.width)
+
+
+```
+
+```{r, eval=T}
+
+```
+
+
+
+
+```{r, eval=T}
+footprint_chip <- merge(diff.bf, data.frame(fgsea_chipseq)[,-8], by.x="name", by.y="gene")
+```
+
+```{r, eval=T, fig.width=1.8, fig.height=1.8}
+ggplot(footprint_chip, aes(y=proj, x=(NES))) + geom_point(data=subset(footprint_chip, class=="red"), color="indianred3", alpha=0.8) + geom_point(data=subset(footprint_chip, class=="blue" & padj < 0.05), color="royalblue3", alpha=0.8) + geom_point(data=subset(footprint_chip, padj > 0.05 & class=="blue"), color="black", alpha=0.2) + theme_classic() + geom_vline(xintercept=c(log10(0.05),-log10(0.05)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.2)+ geom_hline(yintercept=0, lty=1, lwd=0.2) + ylab("Footprinting Composite Score,\nMutant vs. Wild-Type IDH2, iDAPT-seq") + xlab("Signed -Log10 FDR,\nMutant vs. Wild-Type IDH2,\nENCODE ChIP-seq Peak GSEA") + geom_hline(yintercept=c(min(subset(diff.bf, class=="blue")$proj), max(subset(diff.bf, class=="blue")$proj)), lty=3, color="red") + geom_text_repel(data=subset(footprint_chip, name %in% c("GATA1", "TAL1")), aes(label=name), size=3) + geom_point(data=subset(footprint_chip, grepl("GATA1", name) | grepl("TAL1", name)), color="black", pch=1)# + ylim(c(-0.2,0.2)) + xlim(c(-4,4))# + geom_hline(yintercept=c(-1.645,1.645), lty=3, color="red") 
+```
+
+```{r, eval=T, fig.width=1.8, fig.height=1.8}
+ggplot(footprint_chip, aes(y=proj, x=-log10(pval)*sign(NES))) + geom_point(data=subset(footprint_chip, class=="red"), color="indianred3", alpha=0.8) + geom_point(data=subset(footprint_chip, class=="blue" & padj < 0.05), color="royalblue3", alpha=0.8) + geom_point(data=subset(footprint_chip, padj > 0.05 & class=="blue"), color="black", alpha=0.2) + theme_classic() + geom_vline(xintercept=c(log10(0.05),-log10(0.05)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.2)+ geom_hline(yintercept=0, lty=1, lwd=0.2) + ylab("Footprinting Composite Score,\nMutant vs. Wild-Type IDH2, iDAPT-seq") + xlab("Signed -Log10 FDR,\nMutant vs. Wild-Type IDH2,\nENCODE ChIP-seq Peak GSEA") + geom_hline(yintercept=c(min(subset(diff.bf, class=="blue")$proj), max(subset(diff.bf, class=="blue")$proj)), lty=3, color="red") + geom_text_repel(data=subset(footprint_chip, name %in% c("GATA1", "TAL1")), aes(label=name), size=3) + geom_point(data=subset(footprint_chip, grepl("GATA1", name) | grepl("TAL1", name)), color="black", pch=1)# + ylim(c(-0.2,0.2)) + xlim(c(-4,4))# + geom_hline(yintercept=c(-1.645,1.645), lty=3, color="red") 
+```
+
+```{r, eval=T}
+ms_chip <- merge(k562_pos.neg, data.frame(fgsea_chipseq)[,-8], by.x="GeneSymbol", by.y="gene")
+```
+
+```{r, eval=T, fig.width=1.8, fig.height=1.8}
+ggplot(ms_chip, aes(y=-log10(adj.P.Val)*sign(logFC), x=-log10(padj)*sign(NES))) + geom_point(data=subset(ms_chip, adj.P.Val < 0.05), color="indianred3", alpha=0.8) + geom_point(data=subset(ms_chip, adj.P.Val > 0.05 & padj < 0.05), color="royalblue3", alpha=0.8) + geom_point(data=subset(ms_chip, padj > 0.05 & adj.P.Val > 0.05), color="black", alpha=0.2) + theme_classic() + geom_vline(xintercept=c(log10(0.05),-log10(0.05)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.2)+ geom_hline(yintercept=0, lty=1, lwd=0.2) + ylab("Footprinting Composite Score,\nMutant vs. Wild-Type IDH2, iDAPT-seq") + xlab("Signed -Log10 FDR,\nMutant vs. Wild-Type IDH2,\nENCODE ChIP-seq Peak GSEA") + geom_hline(yintercept=c(min(subset(diff.bf, class=="blue")$proj), max(subset(diff.bf, class=="blue")$proj)), lty=3, color="red") + geom_text_repel(data=subset(ms_chip, GeneSymbol %in% c("GATA1", "TAL1")), aes(label=GeneSymbol), size=3) + geom_point(data=subset(ms_chip, grepl("GATA1", GeneSymbol) | grepl("TAL1", GeneSymbol)), color="black", pch=1)# + ylim(c(-0.2,0.2)) + xlim(c(-4,4))# + geom_hline(yintercept=c(-1.645,1.645), lty=3, color="red") 
+```
+
+```{r, eval=T}
+footprint_chip
+
+dim(subset(footprint_chip, class=="red" & -log10(adj.P.Val)*sign(logFC) > -log10(0.05))) # 45 FP Sig, ChIP Sig
+dim(subset(footprint_chip, class=="red" & -log10(adj.P.Val)*sign(logFC) < -log10(0.05))) # 8 FP Sig, ChIP NS
+dim(subset(footprint_chip, class=="blue" & -log10(adj.P.Val)*sign(logFC) > -log10(0.05))) # 93 FP NS, ChIP sig
+dim(subset(footprint_chip, class=="blue" & -log10(adj.P.Val)*sign(logFC) < -log10(0.05))) # 27 NS, NS
+dim(footprint_chip) # 173 "epitopes" total
+```
+
+
+
+```{r, eval=T}
+dim(subset(fpd.ms, class=="red" & -log10(adj.P.Val)*sign(logFC) > -log10(0.05))) # 45 FP Sig, ChIP Sig
+dim(subset(fpd.ms, class=="red" & -log10(adj.P.Val)*sign(logFC) < -log10(0.05))) # 8 FP Sig, ChIP NS
+dim(subset(fpd.ms, class=="blue" & -log10(adj.P.Val)*sign(logFC) > -log10(0.05))) # 93 FP NS, ChIP sig
+dim(subset(fpd.ms, class=="blue" & -log10(adj.P.Val)*sign(logFC) < -log10(0.05))) # 27 NS, NS
+dim(fpd.ms) # 173 "epitopes" total
+```
+
+```{r, eval=T}
+dim(subset(fpd.ms, class=="red" & -log10(adj.P.Val)*sign(logFC) > 0)) # 45 FP Sig, ChIP Sig
+dim(subset(fpd.ms, class=="red" & -log10(adj.P.Val)*sign(logFC) < 0)) # 8 FP Sig, ChIP NS
+dim(subset(fpd.ms, class=="blue" & -log10(adj.P.Val)*sign(logFC) > 0)) # 93 FP NS, ChIP sig
+dim(subset(fpd.ms, class=="blue" & -log10(adj.P.Val)*sign(logFC) < 0)) # 27 NS, NS
+dim(fpd.ms) # 173 "epitopes" total
+```
+
+```{r, eval=T}
+dim(subset(footprint_chip, class=="red" & -log10(padj)*sign(NES) > -log10(0.05))) # 85 FP Sig, ChIP Sig
+dim(subset(footprint_chip, class=="red" & -log10(padj)*sign(NES) < -log10(0.05))) # 0 FP Sig, ChIP NS
+dim(subset(footprint_chip, class=="blue" & -log10(padj)*sign(NES) > -log10(0.05))) # 109 FP NS, ChIP sig
+dim(subset(footprint_chip, class=="blue" & -log10(padj)*sign(NES) < -log10(0.05))) # 2 NS, NS
+dim(footprint_chip) # 196 "epitopes" total
+```
+
+```{r, eval=T}
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) > -log10(0.05) & -log10(padj)*sign(NES) > -log10(0.05))) # 287 MS Sig, ChIP Sig
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) > -log10(0.05) & -log10(padj)*sign(NES) < -log10(0.05))) # 4 MS Sig, ChIP NS
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) < -log10(0.05) & -log10(padj)*sign(NES) > -log10(0.05))) # 70 MS NS, ChIP sig
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) < -log10(0.05) & -log10(padj)*sign(NES) < -log10(0.05))) # 3 down + down
+dim(ms_chip) # 364 "epitopes" total
+```
+
+```{r, eval=T}
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) > 0 & -log10(padj)*sign(NES) > 0)) # 287 MS Sig, ChIP Sig
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) > 0 & -log10(padj)*sign(NES) < 0)) # 4 MS Sig, ChIP NS
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) < 0 & -log10(padj)*sign(NES) > 0)) # 70 MS NS, ChIP sig
+dim(subset(ms_chip, -log10(adj.P.Val)*sign(logFC) < 0 & -log10(padj)*sign(NES) < 0)) # 3 down + down
+dim(ms_chip) # 364 "epitopes" total
+```
+
+```{r, eval=T}
+nb4_fpd.ms <- read.table(file="../../../ANALYSIS/atacseq/nb4/nb4_fpd.ms.txt", header=T, sep='\t')
+```
+
+```{r, eval=T}
+factor(intersect(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "high")$GeneSymbol, subset(nb4_fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "high")$GeneSymbol))
+```
+
+```{r, eval=T}
+factor(union(intersect(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "high")$GeneSymbol, subset(nb4_fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "mid")$GeneSymbol),
+       intersect(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "mid")$GeneSymbol, subset(nb4_fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "high")$GeneSymbol)))
+```
+
+```{r, eval=T}
+factor(intersect(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "mid")$GeneSymbol, subset(nb4_fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "mid")$GeneSymbol))
+```
+
+```{r, eval=T}
+factor(union(intersect(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "low")$GeneSymbol, subset(nb4_fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "mid")$GeneSymbol),
+       intersect(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "mid")$GeneSymbol, subset(nb4_fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "low")$GeneSymbol)))
+```
+
+
+```{r, eval=T}
+factor(intersect(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "low")$GeneSymbol, subset(nb4_fpd.ms, adj.P.Val < 0.05 & logFC > 0 & mixclass == "low")$GeneSymbol))
+```
+
+```{r, eval=T}
+library(chromVARmotifs)
+data("human_pwms_v2")
+```
+
+```{r, eval=T}
+print(seqLogo::seqLogo((exp(1)^as.matrix(human_pwms_v2[which(grepl("CUX1",names(human_pwms_v2)))][[1]])*.25), xaxis=F, yaxis=F))
+print(seqLogo::seqLogo((exp(1)^as.matrix(human_pwms_v2[which(grepl("LCOR",names(human_pwms_v2)))][[1]])*.25), xaxis=F, yaxis=F))
+print(seqLogo::seqLogo((exp(1)^as.matrix(human_pwms_v2[which(grepl("ZEB1",names(human_pwms_v2)))][[1]])*.25), xaxis=F, yaxis=F))
+print(seqLogo::seqLogo((exp(1)^as.matrix(human_pwms_v2[which(grepl("GATA1",names(human_pwms_v2)))][[1]])*.25), xaxis=F, yaxis=F))
+print(seqLogo::seqLogo((exp(1)^as.matrix(human_pwms_v2[which(grepl("TAL1",names(human_pwms_v2)))][[1]])*.25), xaxis=F, yaxis=F))
+print(seqLogo::seqLogo((exp(1)^as.matrix(human_pwms_v2[which(grepl("IKZF1",names(human_pwms_v2)))][[1]])*.25), xaxis=F, yaxis=F))
+```
+
+
+```{r, eval=T}
+#devtools::install_github("GreenleafLab/chromVARmotifs")
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("chromVAR")
+#biocLite("motifmatchr")
+#biocLite("BSgenome.Hsapiens.UCSC.hg19")
+#biocLite("BSgenome.Hsapiens.UCSC.hg38")
+
+library(chromVAR)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(Rsamtools)
+
+peakfile <- "k562_base_sorted_peaks_noblacklist.nochr.bed" # FDR 1% from macs2, all 293t bam files (gDNA + chromatinized)
+peaks <- readNarrowpeaks(peakfile)
+
+peaks@seqnames@values <- factor(paste0("chr",peaks@seqnames@values))
+peaks@seqnames@values <- factor(peaks@seqnames@values, levels=as.character(peaks@seqnames@values))
+peaks@seqinfo@seqnames <- paste0("chr",peaks@seqinfo@seqnames)
+
+motif_peaks <- matchMotifs(human_pwms_v2[which(grepl("RELA",names(human_pwms_v2)) | 
+                                               grepl("CTCF",names(human_pwms_v2)) | 
+                                               grepl("CUX1",names(human_pwms_v2)) | 
+                                               grepl("ZEB1",names(human_pwms_v2)) | 
+                                               grepl("LCOR",names(human_pwms_v2)) |
+                                               grepl("IKZF1", names(human_pwms_v2)))], peaks,
+                         genome = BSgenome.Hsapiens.UCSC.hg38, out="positions")
+
+#motif_peaks <- matchMotifs(human_pwms_v2, peaks,
+#                         genome = BSgenome.Hsapiens.UCSC.hg38, out="positions")
+
+motif_peaks_extended <- list()
+for(i in 1:length(motif_peaks)){
+  motif_peaks_extended[[i]] <- motif_peaks[[i]]+250
+}
+names(motif_peaks_extended) <- names(motif_peaks)
+
+nakedbam <- "LIB043491_GEN00164599_S10_sorted.noM.norep.bam"
+nativebam <- "LIB043491_GEN00164602_S13_sorted.noM.norep.bam"
+
+scanned <- scanBam(nakedbam, 
+                   param = 
+                     ScanBamParam(flag = 
+                                    scanBamFlag(isMinusStrand = FALSE, 
+                                                isProperPair = TRUE),
+                                  what = c("rname", "pos", "isize")))[[1]]
+scanned_left <- GRanges(seqnames = scanned$rname, 
+                        IRanges(start = scanned$pos+4, 
+                                width = 1), strand = "+")
+scanned_right <- GRanges(seqnames = scanned$rname, 
+                         IRanges(start = scanned$pos-5+abs(scanned$isize)-1, width = 1),
+                         strand = "-")
+x <- c(scanned_left, scanned_right)[as.vector(matrix(seq_len(2L * length(scanned_left)), nrow = 2L, 
+                                     byrow = TRUE))]
+xcov_naked <- coverage(x)
+
+scanned <- scanBam(nativebam, 
+                   param = 
+                     ScanBamParam(flag = 
+                                    scanBamFlag(isMinusStrand = FALSE, 
+                                                isProperPair = TRUE),
+                                  what = c("rname", "pos", "isize")))[[1]]
+scanned_left <- GRanges(seqnames = scanned$rname, 
+                        IRanges(start = scanned$pos+4, 
+                                width = 1), strand = "+")
+scanned_right <- GRanges(seqnames = scanned$rname, 
+                         IRanges(start = scanned$pos-5+abs(scanned$isize)-1, width = 1),
+                         strand = "-")
+x <- c(scanned_left, scanned_right)[as.vector(matrix(seq_len(2L * length(scanned_left)), nrow = 2L, 
+                                     byrow = TRUE))]
+xcov_native <- coverage(x)
+
+print("motif scanning")
+  
+motif_mat_naked <- NULL
+for(m in names(motif_peaks_extended)){
+for(chr in names(xcov_naked)){ # for chr in chromosomes
+  if(chr==1){
+  motif_mat_naked[[m]] <- 
+    colSums(as.matrix(Views(xcov_naked[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_naked[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  } else if(chr %in% str_replace_all(levels(seqnames(motif_peaks_extended[[m]])), "chr", "")) {
+    motif_mat_naked[[m]] <- motif_mat_naked[[m]] + 
+    colSums(as.matrix(Views(xcov_naked[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_naked[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  }
+}
+    bg = mean(motif_mat_naked[[m]][seq(length(motif_mat_naked[[m]])-50, length(motif_mat_naked[[m]]))])
+    motif_mat_naked[[m]] <- motif_mat_naked[[m]]/bg
+}
+
+motif_mat_native <- NULL
+for(m in names(motif_peaks_extended)){
+for(chr in names(xcov_native)){ # for chr in chromosomes
+  if(chr==1){
+  motif_mat_native[[m]] <- 
+    colSums(as.matrix(Views(xcov_native[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_native[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  } else if(chr %in% str_replace_all(levels(seqnames(motif_peaks_extended[[m]])), "chr", "")) {
+    motif_mat_native[[m]] <- motif_mat_native[[m]] + 
+    colSums(as.matrix(Views(xcov_native[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_native[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  }
+}
+    bg = mean(motif_mat_native[[m]][seq(length(motif_mat_native[[m]])-50, length(motif_mat_native[[m]]))])
+    motif_mat_native[[m]] <- motif_mat_native[[m]]/bg
+}
+
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.2}
+for(i in 1:length(motif_mat_naked)){
+  motif_of_interest <- motif_mat_naked[[i]]
+  df.moi <- data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="naked")
+  
+  motif_of_interest <- motif_mat_native[[i]]
+  df.moi <- rbind(df.moi, data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="native"))
+  
+  print(ggplot(df.moi, aes(x=position, y=count, group=type, color=type)) + geom_line(alpha=0.7) + scale_x_discrete(breaks = c("-200", "-1", "1", "200")) + xlab(paste0("Position from Motif\n",unlist(strsplit(names(motif_mat_naked)[i], "_"))[3])) + ylab("Normalized\nInsertion Rate") + theme_classic() + scale_color_manual(values=c("black", "red")) + geom_hline(yintercept=1, lty=3) + theme(legend.position="none") + ylim(c(0.2,3)))
+}
+```
+
+
+
+
+
+
+
+

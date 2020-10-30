@@ -1,0 +1,1593 @@
+---
+title: "2019-10-31_atacseq_analysis"
+author: "Jonathan Lee"
+date: "10/31/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("preprocessCore")
+#biocLite()
+library(preprocessCore)
+#biocLite("sva")
+library(sva)
+#biocLite("limma")
+library(limma)
+#install.packages(c("wordcloud","tm"),repos="http://cran.r-project.org")
+#library(wordcloud)
+#library(tm)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+#biocLite("GO.db")
+library(GO.db)
+library(gProfileR)
+library(reactome.db)
+library(fgsea)
+library(biomaRt)
+#biocLite("org.Hs.eg.db")
+library(org.Hs.eg.db)
+library(dplyr)
+library(reshape2)
+library(pheatmap)
+library(clusterProfiler)
+#install.packages("rentrez")
+library(rentrez)
+library(igraph)
+```
+
+
+```{r, eval=T, fig.width=1, fig.height=0.8}
+for(f in list.files(path=".", pattern="insertsize2.txt")){
+  insertsize <- read.table(file=f, sep='\t', header=T)
+  #print(ggplot(insertsize, aes(x=size, y=count)) + geom_line() + theme_classic() + ylim(c(0,30000)) + xlim(c(0,1000)) + xlab("Insert Size (bp)") + ylab("# Reads") + ggtitle(strsplit(f, "_")[[1]][3])) 
+  print(ggplot(insertsize, aes(x=size, y=count)) + geom_line() + theme_classic() + ylim(c(0,20000)) + xlim(c(0,1000)) + xlab("Insert Size (bp)") + ylab("# Reads") + ggtitle(strsplit(f, "_")[[1]][3])) 
+}
+```
+
+```{r, eval=T, fig.width=1, fig.height=1}
+tss_values <- NULL
+for(f in list.files(path=".", pattern="distToTSS.txt")){
+  tss <- read.table(file=f, sep=' ', header=T)
+  print(ggplot(tss, aes(x=Position/1000, y=Count)) + geom_line() + theme_classic() + ylim(c(0,11000)) + xlab("TSS Position (kb)") + ylab("# Reads") + ggtitle(strsplit(f, "_")[[1]][3])) 
+  tss_values <- rbind(tss_values, cbind(sample=f, tss=tss[2001,1]/mean(tss[1:200,1])))
+}
+```
+
+```{r, eval=T}
+tss_values <- data.frame(tss_values)
+tss_values$tss <- as.numeric(as.character(tss_values$tss))
+```
+
+```{r, eval=T}
+tss_values <- subset(tss_values, ! grepl("S1", sample) & ! grepl("S2", sample) & ! grepl("S3", sample))
+
+tss_values$sample <- c(paste0("DMSO ",1:3), paste0("ATRA ", 1:3))
+#tss_values$sample <- factor(tss_values$sample, levels=rev(tss_values$sample))
+```
+
+```{r, eval=T, fig.width=2, fig.height=1}
+ggplot(tss_values, aes(x=sample, y=tss)) + geom_bar(stat="identity") + theme_classic() + geom_hline(yintercept=0) + coord_flip() + xlab("") + ylab("TSS-to-Background\nInsertion Ratio")
+```
+
+```{r, eval=T, fig.width=2, fig.height=1.5}
+nonmito_prop <- NULL
+for(f in list.files(path=".", pattern="mito.log")){
+  nonmito_prop <- rbind(nonmito_prop, cbind(sample=f, prop=as.character(tail(read.table(file=f),1)$V5)))
+}
+
+nonmito_prop <- data.frame(nonmito_prop)
+nonmito_prop$prop <- as.numeric(as.character(nonmito_prop$prop))
+
+#nonmito_prop$sample <- c(paste0("P",1:3), paste0("KI", 1:3))
+#nonmito_prop$sample <- factor(nonmito_prop$sample, levels=rev(nonmito_prop$sample))
+
+ggplot(nonmito_prop, aes(x=sample, y=prop)) + geom_point() + ylim(c(0,1)) + theme_classic() + xlab("") + ylab("Non-Mitochondrial\nRead Proportion") + coord_flip()
+```
+
+```{r, eval=T}
+for(f in list.files(path=".", pattern="5000000.annstats.txt")){
+  if(!grepl("_S1_", as.character(f)) & !grepl("_S2_",as.character(f)) & !grepl("_S3_", as.character(f))){
+    print(read.table(file=f, sep='\t', header=T))
+  }
+}
+
+```
+
+
+```{r, eval=T, fig.width=2, fig.height=1.5}
+peakanno <- NULL
+for(f in list.files(path=".", pattern="5000000.annstats.txt")){
+  peakanno <- rbind(peakanno, cbind(sample=f, anno=as.character(head(read.table(file=f, sep='\t', header=T),5)[,1]), ratio=as.numeric(as.character(head(read.table(file=f, sep='\t', header=T),5)[,4]))))
+}
+
+peakanno <- data.frame(peakanno)
+peakanno$ratio <- as.numeric(as.character(peakanno$ratio))
+
+#peakanno$sample <- c(sort(rep(paste0("P",1:3),5)), sort(rep(paste0("KI",1:3),5)))
+#peakanno$sample <- factor(peakanno$sample, levels=rev(peakanno$sample))
+
+peakanno <- subset(peakanno, !grepl("_S1_", as.character(sample)) & !grepl("_S2_",as.character(sample)) & !grepl("_S3_", as.character(sample)) )
+
+ggplot(peakanno, aes(x=anno, y=ratio, fill=sample)) + geom_bar(stat="identity", position="dodge") + theme_classic() + ylab("Log2 Fold Change") + xlab("Annotation") + geom_hline(yintercept=0, lty=3) + theme(legend.position="none")
+```
+
+```{r, eval=T}
+atra_counts <- read.table(file="nb4_atra_atacseq_counts.txt", header=T)
+colnames(atra_counts) <- c("position", paste0("dmso ",1:3), paste0("atra ",1:3))
+#row.names(atacseq_counts) <- atacseq_counts[,1]
+
+atra_counts <- atra_counts[!duplicated(atra_counts),]
+row.names(atra_counts) <- atra_counts[,1]
+atra_counts <- atra_counts[,-1]
+```
+
+```{r, eval=T}
+# create treatment sample matrix
+atra_sample <- data.frame(chromatin = c(rep("Nuclei",6)),
+                     treatment = c(rep("DMSO",3), rep("ATRA",3)),
+                     #batch = c(rep("B1",9), rep("B2",6)),
+                     row.names = c(paste0("dmso ",1:3), paste0("atra ", 1:3)))
+```
+
+```{r, eval=T}
+library(DESeq2)
+atra_dds <- DESeqDataSetFromMatrix(countData = atra_counts, colData = atra_sample, design = ~treatment)
+atra_dds <- estimateSizeFactors(atra_dds)
+
+#ecoli_reads <- c(1057, 674, 478, 462, 785, 1925)
+#ecoli_ratio <- ecoli_reads/ mean(ecoli_reads)
+#plot(ecoli_ratio)
+#sizeFactors(atra_dds) <- ecoli_ratio
+```
+
+```{r, eval=T}
+atra_vst <- assay(varianceStabilizingTransformation(atra_dds))
+#atra_vst <- atra_vst[atac_results$position,]
+```
+
+```{r, eval=T, fig.width=2, fig.height=1.5}
+hist(rowMeans(atra_vst))
+
+atra_pc <- prcomp(t(atra_vst))
+ggplot(data.frame(atra_pc$x, Sample=atra_sample[colnames(atra_vst),2], Name=colnames(atra_vst)), aes(PC1, PC2)) + 
+  geom_point(aes(colour = Sample), size=3)  + theme_classic() + geom_text_repel(aes(label=Name)) + xlab(paste0("PC1 (", 100*summary(atra_pc)$importance[2,1], "% of variance)")) + ylab(paste0("PC2 (", 100*summary(atra_pc)$importance[2,2], "% of variance)")) + geom_vline(xintercept=0, lty=3, color="red")
+```
+
+
+```{r, eval=T}
+atra_dds <- DESeq(atra_dds)
+```
+
+```{r, eval=T}
+atac_results <- results(atra_dds,contrast=c("treatment", "ATRA", "DMSO"), independentFiltering = F, cooksCutoff = Inf)
+
+atac_results_shrunk <- lfcShrink(atra_dds, contrast=c("treatment", "ATRA", "DMSO"), res=atac_results)
+atac_results_shrunk <- data.frame(atac_results_shrunk )
+atac_results_shrunk$position <- row.names(atac_results_shrunk)
+```
+
+```{r, eval=T, fig.width=1.8, fig.height=1.3}
+ggplot(atac_results_shrunk, aes(x=log2FoldChange, y=-log10(padj))) + geom_point(pch=20, color="lightgray", alpha=0.1, data=subset(atac_results_shrunk, padj > 0.05)) + geom_point(pch=20, color="indianred", data=subset(atac_results_shrunk, padj < 0.05 & log2FoldChange > 0), alpha=0.1) + geom_point(pch=20, color="skyblue", data=subset(atac_results_shrunk, padj < 0.05 & log2FoldChange < 0), alpha=0.1) + theme_classic() + geom_hline(yintercept=0, lty=3) +# + xlim(c(-2.5,2.5)) + ylim(c(0,20)) + 
+  geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red") + ylab("-Log10 FDR") + xlab("Log2 Fold Change,\niDAPT-seq NB4 ATRA vs. DMSO")
+```
+
+
+```{r, eval=T}
+atac.ranks <- atac_results_shrunk$log2FoldChange
+#mut.wt.ranks <- (mut.wt_filt$logFC)
+names(atac.ranks) <- atac_results$position
+```
+
+```{r, eval=T}
+bagfoot <- read.table(file="2019-10-28_bagfoot.nb4_atra.all.txt")
+```
+
+```{r, eval=T}
+bagfoot$tx <- ifelse(grepl("S4", bagfoot$V1) | grepl("S5", bagfoot$V1) | grepl("S6", bagfoot$V1), "DMSO", "ATRA")
+
+tmp <- NULL
+for(s in strsplit(as.character(bagfoot$V2), "_")){tmp <- c(tmp, s[3])}
+bagfoot$tf <- tmp
+
+bagfoot$proj <- (as.matrix(bagfoot[,c("V3","V4")]) %*% as.matrix(c(1,-1)) / sqrt(2))[,1]
+```
+
+```{r, eval=T}
+bf_mini <- bagfoot#[1:240,]
+#bf_mini <- data.frame(bf_mini)
+bf_mini$tx <- factor(bf_mini$tx)
+bf_mini$tf <- factor(bf_mini$tf)
+
+#mod <- lm(proj ~ tx+tf + tx:tf, data=bf_mini)
+mod <- lm(proj ~ tf + tx:tf, data=bf_mini)
+#summary(mod)
+
+mod_sum <- data.frame(summary(mod)$coefficients)
+mod_sum <- mod_sum[which(grepl(":txDMSO",row.names(mod_sum))),]
+mod_sum$tf <- unlist(strsplit(substrLeft(row.names(mod_sum), 7), "tf"))[c(F,T)]
+mod_sum$bonferroni <- p.adjust(mod_sum$Pr...t.., method="bonferroni")
+
+mod_sum$fdr <- p.adjust(mod_sum$Pr...t.., method="fdr")
+mod_sum$class <- ifelse(mod_sum$fdr < 0.05, "red", "blue")
+
+tmp <- c()
+
+for(m in mod_sum$tf){
+  tmp <- rbind(tmp, colMeans(subset(bagfoot, tf == m & (grepl("S7", V1) | grepl("S8", V1) | grepl("S9", V1)))[,3:4]) - colMeans(subset(bagfoot, tf == m & (grepl("S4", V1) | grepl("S5", V1) | grepl("S6", V1)))[,3:4]))
+}
+
+mod_sum$fpd <- tmp[,2] # V4
+mod_sum$fa <- tmp[,1] # V3
+
+tmp <- data.frame(summary(lm(V4 ~ tf + tx:tf, data=bf_mini))$coefficients) # V4 = FPD
+tmp <- tmp[which(grepl(":txDMSO",row.names(tmp))),]
+tmp$tf <- unlist(strsplit(substrLeft(row.names(tmp), 7), "tf"))[c(F,T)]
+tmp$fpd_fdr <- p.adjust(tmp$Pr...t.., method="fdr")
+tmp <- tmp[,c(3,5,6)]
+colnames(tmp)[1] <- c("fpd_tstat")
+
+mod_sum <- merge(mod_sum, tmp, by="tf")
+
+
+tmp <- data.frame(summary(lm(V3 ~ tf + tx:tf, data=bf_mini))$coefficients) # V3 = FA
+tmp <- tmp[which(grepl(":txDMSO",row.names(tmp))),]
+tmp$tf <- unlist(strsplit(substrLeft(row.names(tmp), 7), "tf"))[c(F,T)]
+tmp$fa_fdr <- p.adjust(tmp$Pr...t.., method="fdr")
+tmp <- tmp[,c(3,5,6)]
+colnames(tmp)[1] <- c("fa_tstat")
+
+mod_sum <- merge(mod_sum, tmp, by="tf")
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1}
+data.frame(x = mod_sum$t.value) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 2, colour = "black", 
+                 fill = "white") +
+  ylab("Density") + theme_classic() + xlab("NB4 ATRA vs. DMSO\nComposite Footprinting Score") + geom_vline(xintercept=c(max(subset(mod_sum, fdr < 0.05 & t.value < 0)$t.value), min(subset(mod_sum, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red")
+```
+
+```{r, eval=T, fig.width=1.7, fig.height=1.7}
+ggplot(mod_sum, aes(x=fa, y=fpd)) + geom_point(alpha=0.2) + xlab("Change in Flanking Accessibility (FA),\nNB4 ATRA vs. DMSO") + ylab("Change in Footprint Depth (FPD),\nNB4 ATRA vs. DMSO") + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_vline(xintercept=0, lty=3) + geom_smooth(formula=y~x, method="lm") # + geom_abline(slope=-1, intercept=0, lty=3, color="black") 
+
+cor(mod_sum[,"fa"], mod_sum[,"fpd"])
+```
+
+
+```{r, eval=T, fig.width=1.7, fig.height=1.7}
+ggplot(mod_sum, aes(x=-t.value, y=-fa_tstat)) + theme_classic() + geom_point(alpha=0.2) + xlab("NB4 ATRA vs. DMSO\nComposite Footprinting Score") + ylab("NB4 ATRA vs. DMSO\nFlanking Accessibility Score") + geom_vline(xintercept=c(max(subset(mod_sum, fdr < 0.05 & t.value < 0)$t.value), min(subset(mod_sum, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red") + geom_hline(yintercept=c(max(subset(mod_sum, fa_fdr < 0.05 & fa_tstat < 0)$fa_tstat), min(subset(mod_sum, fa_fdr < 0.05 & fa_tstat > 0)$fa_tstat)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.1, color="black") + geom_hline(yintercept=0, lty=1, lwd=0.1, color="black") + geom_smooth(formula=y~x, method="lm") #+ geom_text_repel(data=subset(mod_sum, -t.value < 0 & -fa_tstat > 0 & fa_fdr < 0.05 & fdr < 0.05), aes(label=tf), size=4)
+
+cor(-mod_sum[,"t.value"], -mod_sum[,"fa_tstat"])
+
+ggplot(mod_sum, aes(x=-t.value, y=-fpd_tstat)) + theme_classic() + geom_point(alpha=0.2) + xlab("NB4 ATRA vs. DMSO\nComposite Footprinting Score") + ylab("NB4 ATRA vs. DMSO\nFootprint Depth Score") + geom_vline(xintercept=c(max(subset(mod_sum, fdr < 0.05 & t.value < 0)$t.value), min(subset(mod_sum, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red") + geom_hline(yintercept=c(max(subset(mod_sum, fpd_fdr < 0.05 & fpd_tstat < 0)$fpd_tstat), min(subset(mod_sum, fpd_fdr < 0.05 & fpd_tstat > 0)$fpd_tstat)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.1, color="black") + geom_hline(yintercept=0, lty=1, lwd=0.1, color="black") + geom_smooth(formula=y~x, method="lm")
+
+cor(-mod_sum[,"t.value"], -mod_sum[,"fpd_tstat"])
+```
+
+# ChromVAR analysis
+
+```{r, eval=T}
+# in bash/R...
+#devtools::install_github("GreenleafLab/chromVARmotifs")
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("chromVAR")
+#biocLite("motifmatchr")
+#biocLite("BSgenome.Hsapiens.UCSC.hg19")
+#biocLite("BSgenome.Hsapiens.UCSC.hg38")
+
+library(chromVAR)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+peakfile <- "nb4_atra_sorted_peaks_noblacklist.nochr.bed" # FDR 1% from macs2 (gDNA + chromatinized)
+peaks.bed <- read.table(file=peakfile, sep='\t')
+peaks <- readNarrowpeaks(peakfile)
+
+bamfiles <- c("~/Desktop/nb4_atra/LIB043491_GEN00164593_S4_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164594_S5_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164595_S6_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164596_S7_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164597_S8_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164598_S9_sorted.noM.norep.bam")
+
+fragment_counts <- getCounts(bamfiles, peaks, 
+                              paired =  TRUE, 
+                              by_rg = F, 
+                              format = "bam", 
+                              colData = DataFrame(celltype = c("DMSO","DMSO", "DMSO", "ATRA","ATRA","ATRA")))
+
+fragment_counts@rowRanges@seqnames@values <- factor(paste0("chr",fragment_counts@rowRanges@seqnames@values))
+fragment_counts@rowRanges@seqnames@values <- factor(fragment_counts@rowRanges@seqnames@values, levels=as.character(fragment_counts@rowRanges@seqnames@values))
+fragment_counts@rowRanges@seqinfo@seqnames <- paste0("chr",fragment_counts@rowRanges@seqinfo@seqnames)
+
+fragment_counts <- addGCBias(fragment_counts, genome = BSgenome.Hsapiens.UCSC.hg38)
+counts_filtered <- filterSamples(fragment_counts)
+counts_filtered <- filterPeaks(counts_filtered) # min_in_peaks 10%
+
+motif_ix <- matchMotifs(human_pwms_v2, counts_filtered,
+                         genome = BSgenome.Hsapiens.UCSC.hg38)
+
+# computing deviations
+dev <- computeDeviations(object = counts_filtered, 
+                                 annotations = motif_ix)
+
+variability <- computeVariability(dev)
+```
+
+```{r, eval=T, fig.width=1.7, fig.height=1.7}
+chromvar_pc <- prcomp(t(deviations(dev)), scale=T)
+ggplot(data.frame(chromvar_pc$x, Sample=c("DMSO","DMSO", "DMSO", "ATRA","ATRA","ATRA"), Name=c(paste0("S", 4:9))), aes(PC1, PC2)) + 
+  geom_point(aes(colour = Sample), size=4) + scale_color_brewer(type="qual", palette=1)  + theme_classic() + xlab(paste0("ChromVAR PC1\n(", format(round(100*summary(chromvar_pc)$importance[2,1], digits=1), nsmall=1), "% of variance)")) + ylab(paste0("ChromVAR PC2\n(", format(round(100*summary(chromvar_pc)$importance[2,2], digits=1), nsmall=1), "% of variance)")) + theme(legend.position="none") + geom_text_repel(aes(label=Sample)) + geom_vline(xintercept=0, lty=3, color="red")
+```
+
+```{r, eval=T}
+chromvar_results <- differentialDeviations(dev, "celltype")
+chromvar_results$tf <- ""
+
+tmp <- NULL
+for(s in strsplit(as.character(row.names(chromvar_results)), "_")){tmp <- c(tmp, s[3])}
+chromvar_results$tf <- tmp
+chromvar_results$delta <- rowMeans(deviations(dev)[,4:6]) - rowMeans(deviations(dev)[,1:3])
+chromvar_results$signed_logp <- sign(chromvar_results$delta) * -log10(chromvar_results$p_value_adjusted)
+```
+
+```{r, eval=T}
+chromvar_fpd <- merge( mod_sum, chromvar_results[,c(3,5)], by="tf")
+```
+
+```{r, eval=T, fig.width=1.7, fig.height=1.7}
+ggplot(chromvar_fpd, aes(x=-t.value, y=signed_logp)) + theme_classic() + geom_point(alpha=0.2) + xlab("NB4 ATRA vs. DMSO\nComposite Footprinting Score") + ylab("NB4 ATRA vs. DMSO\nChromVAR Signed -log10 FDR") + geom_vline(xintercept=c(max(subset(mod_sum, fdr < 0.05 & t.value < 0)$t.value), min(subset(mod_sum, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red") + geom_hline(yintercept=c(-log10(0.05), log10(0.05)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.1, color="black") + geom_hline(yintercept=0, lty=1, lwd=0.1, color="black") + geom_smooth(formula=y~x, method="lm") #+ geom_text_repel(data=subset(mod_sum, -t.value < 0 & -fa_tstat > 0 & fa_fdr < 0.05 & fdr < 0.05), aes(label=tf), size=4)
+
+cor(-chromvar_fpd[,"t.value"], chromvar_fpd[,"signed_logp"])
+```
+
+```{r, eval=T}
+nb4_atra.dmso <- read.table(file="../../../DATA/EXP-JDL-422/TMT/nb4_atra.dmso.txt", header=T, sep='\t')
+row.names(nb4_atra.dmso) <- nb4_atra.dmso[,1]
+nb4_atra.dmso <- nb4_atra.dmso[,-1]
+```
+
+```{r, eval=T}
+nb4_pos.neg <- read.table(file="../../../DATA/EXP-JDL-422/TMT/nb4_posneg.txt", header=T, sep='\t')
+row.names(nb4_pos.neg) <- nb4_pos.neg[,1]
+nb4_pos.neg <- nb4_pos.neg[,-1]
+```
+
+```{r, eval=T}
+fpd.ms <- merge(nb4_atra.dmso, mod_sum, by.x="GeneSymbol", by.y="tf")
+chromvar.ms <- merge(nb4_atra.dmso, chromvar_results, by.x="GeneSymbol", by.y="tf")
+```
+
+```{r, eval=T, fig.width=3, fig.height=3}
+ggplot(fpd.ms, aes(y=-t.value, x=logFC)) + geom_point(data=subset(fpd.ms, class=="red" & adj.P.Val < 0.05), color="indianred3", size=3, alpha=0.8) + geom_point(data=subset(fpd.ms, class=="blue" & adj.P.Val < 0.05), color="skyblue3", size=3, alpha=0.8) + geom_point(data=subset(fpd.ms, class=="red" & adj.P.Val > 0.05), size=3, color="black", alpha=0.5) + geom_point(data=subset(fpd.ms, adj.P.Val > 0.05 & class == "blue"), size=3, color="gray", alpha=0.2) + theme_classic() + geom_vline(xintercept=c(max(subset(fpd.ms, adj.P.Val < 0.05 & logFC < 0)$logFC), min(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0)$logFC)), lty=3, color="red") + geom_hline(yintercept=c(min(-subset(fpd.ms, fdr < 0.05 & t.value < 0)$t.value), max(-subset(fpd.ms, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red") + ylab("Footprinting Composite Score\nNB4 ATRA vs. DMSO iDAPT-seq") + xlab("Log2 Fold Change\nNB4 ATRA vs. DMSO iDAPT-MS") + geom_text_repel(data=subset(fpd.ms, GeneSymbol %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12")), aes(label=GeneSymbol), size=3, force=5, segment.alpha = 0.2) + geom_point(pch=1, size=3, data=subset(fpd.ms, GeneSymbol %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12"))) + xlim(c(-5,5)) + ylim(c(-20,20))
+
+```
+
+```{r, eval=T, fig.width=3, fig.height=3}
+ggplot(chromvar.ms, aes(y=signed_logp, x=logFC)) + geom_point(data=subset(chromvar.ms, p_value_adjusted < 0.05 & adj.P.Val < 0.05), color="indianred3", size=3, alpha=0.8) + geom_point(data=subset(chromvar.ms, p_value_adjusted > 0.05 & adj.P.Val < 0.05), color="skyblue3", size=3, alpha=0.8) + geom_point(data=subset(chromvar.ms, p_value_adjusted < 0.05 & adj.P.Val > 0.05), size=3, color="black", alpha=0.5) + geom_point(data=subset(chromvar.ms, adj.P.Val > 0.05 & p_value_adjusted > 0.05), size=3, color="gray", alpha=0.2) + theme_classic() + geom_vline(xintercept=c(max(subset(chromvar.ms, adj.P.Val < 0.05 & logFC < 0)$logFC), min(subset(chromvar.ms, adj.P.Val < 0.05 & logFC > 0)$logFC)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.2) + geom_hline(yintercept=c(-log10(0.05), log10(0.05)), lty=3, color="red") + ylab("ChromVAR Signed -log10 FDR\nNB4 ATRA vs. DMSO iDAPT-seq") + xlab("Log2 Fold Change\nNB4 ATRA vs. DMSO iDAPT-MS") + geom_text_repel(data=subset(chromvar.ms, GeneSymbol %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12")), aes(label=GeneSymbol), size=3, force=5, segment.alpha = 0.2) + geom_point(pch=1, size=3, data=subset(chromvar.ms, GeneSymbol %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12")))
+
+```
+
+# footprint profiles
+
+```{r, eval=T}
+#devtools::install_github("GreenleafLab/chromVARmotifs")
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("chromVAR")
+#biocLite("motifmatchr")
+#biocLite("BSgenome.Hsapiens.UCSC.hg19")
+#biocLite("BSgenome.Hsapiens.UCSC.hg38")
+
+library(chromVAR)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(Rsamtools)
+
+peakfile <- "nb4_atra_sorted_peaks_noblacklist.nochr.bed" # FDR 1% from macs2
+peaks <- readNarrowpeaks(peakfile)
+
+peaks@seqnames@values <- factor(paste0("chr",peaks@seqnames@values))
+peaks@seqnames@values <- factor(peaks@seqnames@values, levels=as.character(peaks@seqnames@values))
+peaks@seqinfo@seqnames <- paste0("chr",peaks@seqinfo@seqnames)
+
+motif_peaks <- matchMotifs(human_pwms_v2[which(grepl("ZNF187",names(human_pwms_v2)) | 
+                                                 
+                                               grepl("BCL11A",names(human_pwms_v2)) | 
+                                               grepl("RARA",names(human_pwms_v2)) | 
+                                               grepl("NR2F2",names(human_pwms_v2)) | 
+                                              #grepl("IRF8",names(human_pwms_v2)) | 
+                                                 
+                                               grepl("NFE2L2",names(human_pwms_v2)) |
+                                               grepl("NFE2",names(human_pwms_v2)) |
+                                               grepl("JUNB",names(human_pwms_v2)) |
+                                               grepl("JUND",names(human_pwms_v2)) |
+                                                 
+                                               grepl("SPI1",names(human_pwms_v2)) |
+                                               grepl("STAT2",names(human_pwms_v2)) |
+                                               grepl("IRF9",names(human_pwms_v2)) |
+                                               grepl("ESRRA",names(human_pwms_v2)) |
+                                                 
+                                               grepl("CEBPE",names(human_pwms_v2)) |
+                                               grepl("CEBPB",names(human_pwms_v2)) |
+                                               grepl("HIC1", names(human_pwms_v2)))], peaks,
+                         genome = BSgenome.Hsapiens.UCSC.hg38, out="positions")
+
+#motif_peaks <- matchMotifs(human_pwms_v2, peaks,
+#                         genome = BSgenome.Hsapiens.UCSC.hg38, out="positions")
+
+motif_peaks_extended <- list()
+for(i in 1:length(motif_peaks)){
+  motif_peaks_extended[[i]] <- motif_peaks[[i]]+250
+}
+names(motif_peaks_extended) <- names(motif_peaks)
+
+dmsobam <- "~/Desktop/nb4_atra/LIB043491_GEN00164593_S4_sorted.noM.norep.bam"
+atrabam <- "~/Desktop/nb4_atra/LIB043491_GEN00164598_S9_sorted.noM.norep.bam"
+
+scanned <- scanBam(dmsobam, 
+                   param = 
+                     ScanBamParam(flag = 
+                                    scanBamFlag(isMinusStrand = FALSE, 
+                                                isProperPair = TRUE),
+                                  what = c("rname", "pos", "isize")))[[1]]
+scanned_left <- GRanges(seqnames = scanned$rname, 
+                        IRanges(start = scanned$pos+4, 
+                                width = 1), strand = "+")
+scanned_right <- GRanges(seqnames = scanned$rname, 
+                         IRanges(start = scanned$pos-5+abs(scanned$isize)-1, width = 1),
+                         strand = "-")
+x <- c(scanned_left, scanned_right)[as.vector(matrix(seq_len(2L * length(scanned_left)), nrow = 2L, 
+                                     byrow = TRUE))]
+xcov_dmso <- coverage(x)
+
+scanned <- scanBam(atrabam, 
+                   param = 
+                     ScanBamParam(flag = 
+                                    scanBamFlag(isMinusStrand = FALSE, 
+                                                isProperPair = TRUE),
+                                  what = c("rname", "pos", "isize")))[[1]]
+scanned_left <- GRanges(seqnames = scanned$rname, 
+                        IRanges(start = scanned$pos+4, 
+                                width = 1), strand = "+")
+scanned_right <- GRanges(seqnames = scanned$rname, 
+                         IRanges(start = scanned$pos-5+abs(scanned$isize)-1, width = 1),
+                         strand = "-")
+x <- c(scanned_left, scanned_right)[as.vector(matrix(seq_len(2L * length(scanned_left)), nrow = 2L, 
+                                     byrow = TRUE))]
+xcov_atra <- coverage(x)
+
+print("motif scanning")
+  
+
+motif_mat_dmso <- NULL
+for(m in names(motif_peaks_extended)){
+for(chr in names(xcov_dmso)){ # for chr in chromosomes
+  if(chr==1){
+  motif_mat_dmso[[m]] <- 
+    colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  } else if(chr %in% str_replace_all(levels(seqnames(motif_peaks_extended[[m]])), "chr", "")) {
+    motif_mat_dmso[[m]] <- motif_mat_dmso[[m]] + 
+    colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  }
+}
+    bg = mean(motif_mat_dmso[[m]][seq(length(motif_mat_dmso[[m]])-50, length(motif_mat_dmso[[m]]))])
+    motif_mat_dmso[[m]] <- motif_mat_dmso[[m]]/bg
+}
+
+motif_mat_atra <- NULL
+for(m in names(motif_peaks_extended)){
+for(chr in names(xcov_atra)){ # for chr in chromosomes
+  if(chr==1){
+  motif_mat_atra[[m]] <- 
+    colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  } else if(chr %in% str_replace_all(levels(seqnames(motif_peaks_extended[[m]])), "chr", "")) {
+    motif_mat_atra[[m]] <- motif_mat_atra[[m]] + 
+    colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  }
+}
+    bg = mean(motif_mat_atra[[m]][seq(length(motif_mat_atra[[m]])-50, length(motif_mat_atra[[m]]))])
+    motif_mat_atra[[m]] <- motif_mat_atra[[m]]/bg
+}
+
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.2}
+for(i in 1:length(motif_mat_dmso)){
+  motif_of_interest <- motif_mat_dmso[[i]]
+  df.moi <- data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="naked")
+  
+  motif_of_interest <- motif_mat_atra[[i]]
+  df.moi <- rbind(df.moi, data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="native"))
+  
+  print(ggplot(df.moi, aes(x=position, y=count, group=type, color=type)) + geom_line(alpha=0.7) + scale_x_discrete(breaks = c("-200", "-1", "1", "200")) + xlab(paste0("Position from Motif\n",unlist(strsplit(names(motif_mat_dmso)[i], "_"))[3])) + ylab("Normalized\nInsertion Rate") + theme_classic() + scale_color_manual(values=c("black", "red")) + geom_hline(yintercept=1, lty=3) + theme(legend.position="none") + ylim(c(0.2,5)))
+}
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.2}
+for(i in 1:length(motif_mat_dmso)){
+  motif_of_interest <- motif_mat_dmso[[i]]
+  df.moi <- data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="naked")
+  
+  motif_of_interest <- motif_mat_atra[[i]]
+  df.moi <- rbind(df.moi, data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="native"))
+  
+  print(ggplot(df.moi, aes(x=position, y=count, group=type, color=type)) + geom_line(alpha=0.7) + scale_x_discrete(breaks = c("-200", "-1", "1", "200")) + xlab(paste0("Position from Motif\n",unlist(strsplit(names(motif_mat_dmso)[i], "_"))[3])) + ylab("Normalized\nInsertion Rate") + theme_classic() + scale_color_manual(values=c("black", "red")) + geom_hline(yintercept=1, lty=3) + theme(legend.position="none") + ylim(c(0.2,3)))
+}
+```
+
+
+```{r, eval=T}
+ebf3_motif <- readJASPARMatrix(fn="MA1637.1.jaspar") #JASPAR2020
+ebf3_motif <- toPWM(ebf3_motif, type=c("log2probratio"))
+
+library(universalmotif)
+
+zeb2_motif <- read_homer(file="zeb2_motif.motif") # homer: http://homer.ucsd.edu/homer/motif/HomerMotifDB/homerResults/motif403.info.html
+zeb2_motif <- convert_motifs(zeb2_motif, "TFBSTools-PWMatrix")
+
+test_motifs <- PWMatrixList(EBF3=ebf3_motif, ZEB2=zeb2_motif, SPI1=human_pwms_v2$ENSG00000066336_LINE1813_SPI1_D_N5, use.names=T)
+```
+
+```{r, eval=F}
+############### Low-Throughput In-House Bagfoot Code ###################
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+
+peaks.bed <- read.table(file=peakfile, sep='\t')
+peaks <- readNarrowpeaks(peakfile)
+
+peakfile <- "nb4_atra_sorted_peaks_noblacklist.nochr.bed" # FDR 1% from macs2 (gDNA + chromatinized)
+peaks <- readNarrowpeaks(peakfile)
+
+peaks@seqnames@values <- factor(paste0("chr",peaks@seqnames@values))
+peaks@seqnames@values <- factor(peaks@seqnames@values, levels=as.character(peaks@seqnames@values))
+peaks@seqinfo@seqnames <- paste0("chr",peaks@seqinfo@seqnames)
+
+motif_peaks <- matchMotifs(test_motifs, peaks,
+                         genome = BSgenome.Hsapiens.UCSC.hg38, out="positions")
+motif_peaks_extended <- motif_peaks+250
+
+bamfiles <- c("~/Desktop/nb4_atra/LIB043491_GEN00164593_S4_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164594_S5_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164595_S6_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164596_S7_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164597_S8_sorted.noM.norep.bam",
+              "~/Desktop/nb4_atra/LIB043491_GEN00164598_S9_sorted.noM.norep.bam")
+
+library(Rsamtools)
+
+df.bagft <- NULL
+
+motif_mat_test <- NULL
+
+for(bam1 in bamfiles){
+  print(bam1)
+
+  scanned <- scanBam(bam1, 
+                     param = 
+                       ScanBamParam(flag = 
+                                      scanBamFlag(isMinusStrand = FALSE, 
+                                                  isProperPair = TRUE),
+                                    what = c("rname", "pos", "isize")))[[1]]
+  scanned_left <- GRanges(seqnames = scanned$rname, 
+                          IRanges(start = scanned$pos+4, 
+                                  width = 1), strand = "+")
+  scanned_right <- GRanges(seqnames = scanned$rname, 
+                           IRanges(start = scanned$pos-5+abs(scanned$isize)-1, width = 1),
+                           strand = "-")
+  x <- c(scanned_left, scanned_right)[as.vector(matrix(seq_len(2L * length(scanned_left)), nrow = 2L, 
+                                       byrow = TRUE))]
+  xcov <- coverage(x)
+  
+  print("motif scanning")
+    
+  
+  for(m in names(test_motifs)){
+    motif_mat <- NULL
+  for(chr in names(xcov)){ # for chr in chromosomes
+    if(chr==1){
+    motif_mat <- 
+      colSums(as.matrix(Views(xcov[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+      rev(colSums(as.matrix(Views(xcov[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+    } else if(chr %in% str_replace_all(levels(seqnames(motif_peaks_extended[[m]])), "chr", "")) {
+      motif_mat <- motif_mat + 
+      colSums(as.matrix(Views(xcov[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+      rev(colSums(as.matrix(Views(xcov[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+    }
+  }
+    
+    center = mean(motif_mat[seq(length(seq(ceiling((length(motif_mat)-500)/2-5)+250, floor((length(motif_mat)-500)/2+5)+250)))], trim=0.1)
+    flank = mean(motif_mat[seq(length(motif_mat)-500+250, length(motif_mat)-500+250+50)])
+    bg = mean(motif_mat[seq(length(motif_mat)-50, length(motif_mat))])
+    
+    fd <- log2(center/flank) # footprint depth
+    fa <- log2(flank/bg) # flanking accessibility
+    
+    df.bagft <- rbind(df.bagft, 
+                      cbind(sample=bam1, motif=m, fa=fa, fd=fd))
+}
+}
+
+
+test_bagft <- data.frame(df.bagft)
+#write.table(data.frame(df.bagft), file="test.txt", quote=F, sep="\t", row.names=F, col.names=F)
+
+```
+
+```{r, eval=T}
+test_bagft$tx <- ifelse(grepl("S4", test_bagft$sample) | grepl("S5", test_bagft$sample) | grepl("S6", test_bagft$sample), "DMSO", "ATRA")
+
+test_bagft$tf <- test_bagft$motif
+test_bagft$fa <- as.numeric(as.character(test_bagft$fa))
+test_bagft$fd <- as.numeric(as.character(test_bagft$fd))
+
+test_bagft$proj <- (as.matrix(test_bagft[,c("fa","fd")]) %*% as.matrix(c(1,-1)) / sqrt(2))[,1]
+```
+
+```{r, eval=T}
+test_bagft$tx <- factor(test_bagft$tx)
+test_bagft$tf <- factor(test_bagft$tf)
+
+mod_test <- lm(proj ~ tf + tx:tf, data=test_bagft)
+#summary(mod)
+
+mod_test <- data.frame(summary(mod_test)$coefficients)
+mod_test <- mod_test[which(grepl(":txDMSO",row.names(mod_test))),]
+mod_test$tf <- unlist(strsplit(substrLeft(row.names(mod_test), 7), "tf"))[c(F,T)]
+
+mod_test 
+```
+
+
+```{r, eval=T}
+#devtools::install_github("GreenleafLab/chromVARmotifs")
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("chromVAR")
+#biocLite("motifmatchr")
+#biocLite("BSgenome.Hsapiens.UCSC.hg19")
+#biocLite("BSgenome.Hsapiens.UCSC.hg38")
+
+library(chromVAR)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(Rsamtools)
+
+peakfile <- "nb4_atra_sorted_peaks_noblacklist.nochr.bed" # FDR 1% from macs2
+peaks <- readNarrowpeaks(peakfile)
+
+peaks@seqnames@values <- factor(paste0("chr",peaks@seqnames@values))
+peaks@seqnames@values <- factor(peaks@seqnames@values, levels=as.character(peaks@seqnames@values))
+peaks@seqinfo@seqnames <- paste0("chr",peaks@seqinfo@seqnames)
+
+motif_peaks <- matchMotifs(test_motifs, peaks,
+                         genome = BSgenome.Hsapiens.UCSC.hg38, out="positions")
+
+#motif_peaks <- matchMotifs(human_pwms_v2, peaks,
+#                         genome = BSgenome.Hsapiens.UCSC.hg38, out="positions")
+
+motif_peaks_extended <- list()
+for(i in 1:length(motif_peaks)){
+  motif_peaks_extended[[i]] <- motif_peaks[[i]]+250
+}
+names(motif_peaks_extended) <- names(motif_peaks)
+
+dmsobam <- "~/Desktop/nb4_atra/LIB043491_GEN00164593_S4_sorted.noM.norep.bam"
+atrabam <- "~/Desktop/nb4_atra/LIB043491_GEN00164598_S9_sorted.noM.norep.bam"
+
+scanned <- scanBam(dmsobam, 
+                   param = 
+                     ScanBamParam(flag = 
+                                    scanBamFlag(isMinusStrand = FALSE, 
+                                                isProperPair = TRUE),
+                                  what = c("rname", "pos", "isize")))[[1]]
+scanned_left <- GRanges(seqnames = scanned$rname, 
+                        IRanges(start = scanned$pos+4, 
+                                width = 1), strand = "+")
+scanned_right <- GRanges(seqnames = scanned$rname, 
+                         IRanges(start = scanned$pos-5+abs(scanned$isize)-1, width = 1),
+                         strand = "-")
+x <- c(scanned_left, scanned_right)[as.vector(matrix(seq_len(2L * length(scanned_left)), nrow = 2L, 
+                                     byrow = TRUE))]
+xcov_dmso <- coverage(x)
+
+scanned <- scanBam(atrabam, 
+                   param = 
+                     ScanBamParam(flag = 
+                                    scanBamFlag(isMinusStrand = FALSE, 
+                                                isProperPair = TRUE),
+                                  what = c("rname", "pos", "isize")))[[1]]
+scanned_left <- GRanges(seqnames = scanned$rname, 
+                        IRanges(start = scanned$pos+4, 
+                                width = 1), strand = "+")
+scanned_right <- GRanges(seqnames = scanned$rname, 
+                         IRanges(start = scanned$pos-5+abs(scanned$isize)-1, width = 1),
+                         strand = "-")
+x <- c(scanned_left, scanned_right)[as.vector(matrix(seq_len(2L * length(scanned_left)), nrow = 2L, 
+                                     byrow = TRUE))]
+xcov_atra <- coverage(x)
+
+print("motif scanning")
+  
+
+motif_mat_dmso <- NULL
+for(m in names(motif_peaks_extended)){
+for(chr in names(xcov_dmso)){ # for chr in chromosomes
+  if(chr==1){
+  motif_mat_dmso[[m]] <- 
+    colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  } else if(chr %in% str_replace_all(levels(seqnames(motif_peaks_extended[[m]])), "chr", "")) {
+    motif_mat_dmso[[m]] <- motif_mat_dmso[[m]] + 
+    colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_dmso[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  }
+}
+    bg = mean(motif_mat_dmso[[m]][seq(length(motif_mat_dmso[[m]])-50, length(motif_mat_dmso[[m]]))])
+    motif_mat_dmso[[m]] <- motif_mat_dmso[[m]]/bg
+}
+
+motif_mat_atra <- NULL
+for(m in names(motif_peaks_extended)){
+for(chr in names(xcov_atra)){ # for chr in chromosomes
+  if(chr==1){
+  motif_mat_atra[[m]] <- 
+    colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  } else if(chr %in% str_replace_all(levels(seqnames(motif_peaks_extended[[m]])), "chr", "")) {
+    motif_mat_atra[[m]] <- motif_mat_atra[[m]] + 
+    colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "+"])))) + 
+    rev(colSums(as.matrix(Views(xcov_atra[[chr]], ranges(motif_peaks_extended[[m]][seqnames(motif_peaks_extended[[m]]) == paste0('chr', chr) & strand(motif_peaks_extended[[m]]) == "-"]))))) 
+  }
+}
+    bg = mean(motif_mat_atra[[m]][seq(length(motif_mat_atra[[m]])-50, length(motif_mat_atra[[m]]))])
+    motif_mat_atra[[m]] <- motif_mat_atra[[m]]/bg
+}
+
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.2}
+for(i in 1:length(motif_mat_dmso)){
+  motif_of_interest <- motif_mat_dmso[[i]]
+  df.moi <- data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="naked")
+  
+  motif_of_interest <- motif_mat_atra[[i]]
+  df.moi <- rbind(df.moi, data.frame(position = factor(c(seq(-250,-1), seq(1, length(motif_of_interest)-500)/100000, seq(1, 250)),
+                                         ordered=T), count=motif_of_interest, type="native"))
+  
+  print(ggplot(df.moi, aes(x=position, y=count, group=type, color=type)) + geom_line(alpha=0.7) + scale_x_discrete(breaks = c("-200", "-1", "1", "200")) + xlab(paste0("Position from Motif\n",names(motif_mat_dmso)[i])) + ylab("Normalized\nInsertion Rate") + theme_classic() + scale_color_manual(values=c("black", "red")) + geom_hline(yintercept=1, lty=3) + theme(legend.position="none") + ylim(c(0.2,3)))
+}
+```
+
+```{r, eval=T, fig.width=2, fig.height=1}
+#print(seqLogo::seqLogo((exp(1)^as.matrix(human_pwms_v2[which(grepl("CUX1",names(human_pwms_v2)))][[1]])*.25), xaxis=F, yaxis=F))
+print(seqLogo::seqLogo(sweep(exp(1)^as.matrix(test_motifs[1][[1]]), 2, colSums(exp(1)^as.matrix(test_motifs[1][[1]])),  "/"), xaxis=F, yaxis=F))
+print(seqLogo::seqLogo(sweep(exp(1)^as.matrix(test_motifs[2][[1]]), 2, colSums(exp(1)^as.matrix(test_motifs[2][[1]])),  "/"), xaxis=F, yaxis=F))
+
+```
+
+```{r, eval=T}
+nb4_atra.dmso <- read.table(file="../../../DATA/EXP-JDL-422/TMT/nb4_atra.dmso.txt", header=T, sep='\t')
+row.names(nb4_atra.dmso) <- nb4_atra.dmso[,1]
+nb4_atra.dmso <- nb4_atra.dmso[,-1]
+```
+
+```{r, eval=T}
+nb4_pos.neg <- read.table(file="../../../DATA/EXP-JDL-422/TMT/nb4_posneg.txt", header=T, sep='\t')
+row.names(nb4_pos.neg) <- nb4_pos.neg[,1]
+nb4_pos.neg <- nb4_pos.neg[,-1]
+```
+
+```{r, eval=T}
+fpd.ms <- merge(nb4_atra.dmso, mod_sum, by.x="GeneSymbol", by.y="tf")
+```
+
+```{r, eval=T, fig.width=3, fig.height=3}
+ggplot(fpd.ms, aes(y=-t.value, x=logFC)) + geom_point(data=subset(fpd.ms, class=="red" & adj.P.Val < 0.05), color="indianred3", size=3, alpha=0.8) + geom_point(data=subset(fpd.ms, class=="blue" & adj.P.Val < 0.05), color="skyblue3", size=3, alpha=0.8) + geom_point(data=subset(fpd.ms, class=="red" & adj.P.Val > 0.05), size=3, color="black", alpha=0.5) + geom_point(data=subset(fpd.ms, adj.P.Val > 0.05 & class == "blue"), size=3, color="gray", alpha=0.2) + theme_classic() + geom_vline(xintercept=c(max(subset(fpd.ms, adj.P.Val < 0.05 & logFC < 0)$logFC), min(subset(fpd.ms, adj.P.Val < 0.05 & logFC > 0)$logFC)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.2) + geom_hline(yintercept=c(min(-subset(fpd.ms, fdr < 0.05 & t.value < 0)$t.value), max(-subset(fpd.ms, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red") + ylab("Footprinting Composite Score\nNB4 ATRA vs. DMSO iDAPT-seq") + xlab("Log2 Fold Change\nNB4 ATRA vs. DMSO iDAPT-MS") + geom_text_repel(data=subset(fpd.ms, GeneSymbol %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12")), aes(label=GeneSymbol), size=3, force=5, segment.alpha = 0.2) + geom_point(pch=1, size=3, data=subset(fpd.ms, GeneSymbol %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12")))
+
+```
+
+```{r, eval=T, fig.width=2, fig.height=1}
+df.tfs <- subset(nb4_pos.neg, GeneSymbol %in% subset(fpd.ms, logFC < 0 & adj.P.Val < 0.05 & fdr < 0.05)$GeneSymbol)
+df.tfs$class <- ifelse(df.tfs$GeneSymbol %in% subset(fpd.ms, logFC < 0 & adj.P.Val < 0.05 & t.value < 0 & fdr < 0.05)$GeneSymbol, "Repressive", "Activating")
+
+wilcox.test(x=subset(df.tfs, class=="Repressive")$logFC, y=subset(df.tfs, class=="Activating")$logFC)
+#t.test(x=subset(df.tfs, class=="Repressive")$logFC, y=subset(df.tfs, class=="Activating")$logFC)
+
+library(RColorBrewer)
+ggplot(df.tfs, aes(x=class, y=logFC)) + geom_jitter() + ylim(c(0,3.3)) + theme_classic() + stat_summary(fun.data=mean_se, fun.args = list(mult=1), 
+        geom="errorbar", color="black", width=0.2) +
+    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean,
+                 geom = "crossbar", width = 0.5) + theme_classic() + ylab("Log2 Fold Change, NB4 iDAPT-MS\nTP3 vs. Control Probes\nTFs Decreased With ATRA") + xlab("") + theme(legend.position="none") + scale_fill_manual(values=brewer.pal(2, "Spectral")) + geom_hline(yintercept=0, lty=3, color="red") + coord_flip()
+
+```
+
+
+```{r, eval=T}
+#biogrid <- read.table(file="../../../DATA/EXP-JDL-220/tmt analysis/biogrid/BIOGRID-MV-Physical-3.5.166.tab2.txt", header=T, sep='\t', comment.char = "", quote="")
+biogrid <- read.table(file="../../../DATA/EXP-JDL-220/tmt analysis/biogrid/BIOGRID-MV-Physical-3.5.178.tab2.txt", header=T, sep='\t', comment.char = "", quote="")
+#biogrid <- read.table(file="../../../DATA/EXP-JDL-220/tmt analysis/biogrid/BIOGRID-ORGANISM-Homo_sapiens-3.5.178.tab2.txt", header=T, sep='\t', comment.char = "", quote="")
+biogrid <- biogrid[,8:9]
+biogrid <- biogrid[!duplicated(biogrid),] # 103219 interactions total 406032, 113702
+
+biogrid_filt <- subset(biogrid, Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol &  Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol)
+```
+
+```{r, eval=T}
+uniq_biogrid <- unique(c(as.character(biogrid_filt$Official.Symbol.Interactor.A), as.character(biogrid_filt$Official.Symbol.Interactor.B)))
+
+biogrid_list <- list()
+for(c in 1:length(uniq_biogrid)){
+    biogrid_list[[c]] <- unique(c(as.character(biogrid_filt[which(biogrid_filt$Official.Symbol.Interactor.A == uniq_biogrid[c]),2]), 
+                          as.character(biogrid_filt[which(biogrid_filt$Official.Symbol.Interactor.B == uniq_biogrid[c]),1]), 
+                          uniq_biogrid[c]))
+}
+
+names(biogrid_list) <- paste0(nb4_atra.dmso[match(uniq_biogrid, as.character(nb4_atra.dmso$GeneSymbol)),]$GeneSymbol,"_complex")
+biogrid_list <- biogrid_list[which(!duplicated(biogrid_list))]
+```
+
+```{r, eval=T}
+atra.dmso.ranks <- nb4_atra.dmso$logFC
+names(atra.dmso.ranks) <- nb4_atra.dmso$GeneSymbol
+```
+
+```{r, eval=T}
+fgsea_biogrid <- fgsea(pathways=biogrid_list, 
+                   stats=atra.dmso.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_biogrid <- fgsea_biogrid[order(fgsea_biogrid$NES),]
+fgsea_biogrid$pathway <- factor(fgsea_biogrid$pathway, levels=unique(fgsea_biogrid$pathway))
+```
+
+```{r, eval=T}
+### helper function ####
+substrLeft <- function(x, n){
+  substr(x, 1, nchar(x)-n)
+}
+```
+
+```{r, eval=T, fig.width=5, fig.height=4}
+ggplot(subset(fgsea_biogrid, padj < 0.05 & substrLeft(as.character(pathway), 8) %in% diff.bf$name), aes(y = NES, x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Normalized Enrichment Score") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("Significant BioGrid Complexes") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="p-value", trans = "log",
+                         breaks=c(0.05, 0.005, 0.0005, 0.00005)) +
+  ylim(c(-3,3)) + geom_hline(yintercept=0, lwd=0.1)
+```
+
+```{r, eval=T, fig.width=5, fig.height=4}
+ggplot(subset(fgsea_biogrid, pval < 0.001), aes(y = NES, x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Normalized Enrichment Score") + 
+  geom_point(aes(size=size, color=(padj)))  +
+  xlab("Significant BioGrid Complexes") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="red", high="blue", name="p-value", trans = "log",
+                         breaks=c(0.05, 0.005, 0.0005, 0.00005)) +
+  ylim(c(-3,3)) + geom_hline(yintercept=0, lwd=0.1)
+```
+
+
+```{r, eval=T}
+subset(fgsea_biogrid, pval < 0.05 & substrLeft(as.character(pathway), 8) %in% diff.bf$name)
+```
+
+```{r, eval=T}
+subset(fgsea_biogrid, grepl("CEBP", pathway))
+```
+
+```{r, eval=T}
+fgsea_biogrid$gene <- str_replace_all(fgsea_biogrid$pathway, "_complex", "")
+pla_biogrid_merge <- merge(data.frame(fgsea_biogrid)[,c(1:7,9)], nb4_atra.dmso, by.x="gene", by.y="GeneSymbol")
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+ggplot(pla_biogrid_merge, aes(x=logFC, y=(NES))) + geom_point(alpha=0.1) + theme_classic() + geom_point(data=subset(pla_biogrid_merge, -log10(adj.P.Val)*sign(logFC) < log10(0.05) & -log10(padj)*sign(NES) < log10(0.05) | -log10(adj.P.Val)*sign(logFC) > -log10(0.05) & -log10(padj)*sign(NES) > -log10(0.05)), color="red", size=3) + 
+  geom_point(data=subset(pla_biogrid_merge, gene=="GATA1"), color="blue", size=3) + geom_text_repel(data=subset(pla_biogrid_merge, -log10(adj.P.Val)*sign(logFC) < log10(0.05) & -log10(padj)*sign(NES) < log10(0.05) | -log10(adj.P.Val)*sign(logFC) > -log10(0.05) & -log10(padj)*sign(NES) > -log10(0.05) | gene=="GATA1"), aes(label=gene)) + 
+  xlab("Signed -Log10 FDR,\nMutant vs. Wild Type IDH2 iDAPT-MS,\nProtein Enrichment") + ylab("Signed -Log10 FDR,\nMutant vs. Wild Type IDH2 iDAPT-MS,\nBioGrid Protein Complex GSEA") + geom_hline(yintercept=c(-log10(0.05),log10(0.05)), lty=3) + geom_vline(xintercept=c(-log10(0.05),log10(0.05)), lty=3)# + xlim(c(-3,2.5)) + ylim(c(-2.5,2.5))
+```
+
+```{r, eval=T}
+subset(data.frame(pla_biogrid_merge), logFC < 0 & adj.P.Val < 0.05 & NES >0 & pval < 0.05 & substrLeft(as.character(pathway), 8) %in% diff.bf$name)
+```
+
+```{r, eval=T}
+subset(data.frame(pla_biogrid_merge), logFC > 0 & adj.P.Val < 0.05 & NES < -1 & pval < 0.05 & substrLeft(as.character(pathway), 8) %in% diff.bf$name)
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A == "SPI1" & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B == "SPI1" & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=35, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+
+```
+
+```{r, eval=T}
+subset(fgsea_biogrid, pathway=="SPI1_complex")
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A %in% c("RARA") & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B %in% c("RARA") & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=35, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A %in% c("BCL11A") & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B %in% c("BCL11A") & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=35, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+
+```
+
+```{r, eval=T, fig.width=3, fig.height=3}
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A %in% c("RARA") & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B %in% c("RARA") & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=20, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+
+for(goi in c("RARA", "NR2F2", "NFE2L2", "NFE2", "JUNB", "JUND", "SPI1", "STAT2", "IRF9", "ESRRA", "CEBPE", "CEBPB", "HIC1")){
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A %in% c(goi) & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B %in% c(goi) & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=35, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+}
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+
+for(goi in c("ZEB2")){
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A %in% c(goi) & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B %in% c(goi) & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=35, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+}
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+cmp1 <- data.frame(A=c("EBF3"), B=c("EBF3"))
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=35, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+```
+
+
+
+```{r, eval=T}
+ceres <- read.csv(file="../Achilles_gene_effect.csv", header=T)
+ccle_anno <- read.csv(file="../sample_info.csv", header=T)
+```
+
+```{r, eval=T}
+ceres_hematopoietic <- t(ceres[which(as.character(ceres[,1]) %in% as.character(subset(ccle_anno, sample_collection_site == "haematopoietic_and_lymphoid_tissue")$DepMap_ID)),])
+ceres_coln <- ceres_hematopoietic[1,]
+ceres_hematopoietic <- data.frame(row.names = row.names(ceres_hematopoietic[-1,,drop=F]), ceres_hematopoietic[-1,,drop=F])
+colnames(ceres_hematopoietic) <- ceres_coln
+for(c in colnames(ceres_hematopoietic)){
+  ceres_hematopoietic[,c] <- as.numeric(as.character(ceres_hematopoietic[,c]))
+}
+
+ceres_hematopoietic$gene <- unlist(strsplit(row.names(ceres_hematopoietic), "[.][.]"))[c(T,F)]
+row.names(ceres_hematopoietic) <- ceres_hematopoietic$gene
+ceres_hematopoietic <- ceres_hematopoietic[,-c(which(colnames(ceres_hematopoietic)=="gene"))]
+
+colnames(ceres_hematopoietic) <- as.character(ccle_anno$stripped_cell_line_name[match(colnames(ceres_hematopoietic), ccle_anno$DepMap_ID)])
+
+ceres_hematopoietic_all <- unlist(ceres_hematopoietic)
+ceres_hematopoietic_all <- ceres_hematopoietic_all[which(!is.na(ceres_hematopoietic_all))]
+
+#rmeans <- rowMeans(as.matrix(ceres_hematopoietic))
+#rsd <- rowSds(as.matrix(ceres_hematopoietic))
+
+#genes_essential <- names(which(rmeans + 3*rsd < 0))
+
+```
+
+```{r, eval=T}
+goi="NT5DC2"
+colnames(ceres_hematopoietic)[which(t(ceres_hematopoietic[goi,]) < mean(t(ceres_hematopoietic[goi,]))-3*sd(t(ceres_hematopoietic[goi,])))]
+```
+
+```{r, eval=T}
+ceres_scaled <- apply(ceres_hematopoietic, 1, scale)
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+library(mixtools)
+
+set.seed(8)
+mixmdl <- normalmixEM(ceres_hematopoietic_all, k = 2, epsilon=1e-3, maxit = 3000)
+
+plot_mix_comps <- function(x, mu, sigma, lam) {
+  lam * dnorm(x, mu, sigma)
+}
+
+# min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]) = -0.4491604
+
+data.frame(x = mixmdl$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 0.1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[1], mixmdl$sigma[1], lam = mixmdl$lambda[1]),
+                colour = "indianred3", lwd = 0.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[2], mixmdl$sigma[2], lam = mixmdl$lambda[2]),
+                colour = "skyblue3", lwd = 0.5) +
+  ylab("Density") + theme_classic() + xlab("DepMap Dependency Score,\nHematopoietic Cell Lines") + geom_vline(xintercept=min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]), lty=3, color="red")
+
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+data.frame(x = rowSums((ceres_hematopoietic < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)])))) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") + 
+  ylab("Density") + theme_classic() + xlab("# Cell Lines Per Gene Dependency,\nHematopoietic Cell Lines") + geom_vline(xintercept=dim(ceres_hematopoietic )[2]/2, lty=3, color="red")
+
+```
+
+```{r, eval=T}
+nb4_dep <- data.frame(gene=row.names(ceres_hematopoietic), ceres=ceres_hematopoietic[,"NB4"])
+nb4_dep_atra_full <- merge(nb4_dep, nb4_atra.dmso, by.x=1, by.y="GeneSymbol")
+nb4_dep_atra <- subset(nb4_dep_atra_full, (gene %in% names(which(rowSums((ceres_hematopoietic < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)])), na.rm=T) < 34))))
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+# exclude essential genes - "dependency" in every hematopoietic cell line
+# threshold determined by mixture modeling
+# colored points based on 
+ggplot(nb4_dep_atra, aes(x=ceres, y=logFC)) + geom_point(data=subset(nb4_dep_atra, ceres < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]) & adj.P.Val < 0.05 & logFC < 0), color="indianred3", alpha=0.5) + geom_point(data=subset(nb4_dep_atra, ceres < 0 & logFC < 0 & (ceres > min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]) | adj.P.Val > 0.05 | logFC > 0)), alpha=0.3, color="lightgray") + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_vline(xintercept=0, lty=3) + geom_vline(xintercept=min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]), lty=3, color="red") + geom_hline(yintercept=max(subset(nb4_dep_atra, ceres < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]) & adj.P.Val < 0.05 & logFC < 0)$logFC), lty=3, color="red") + geom_point(data=subset(nb4_dep_atra, logFC < -0.8 & adj.P.Val < 0.05 & ceres < -0.5 | gene == "PML" & adj.P.Val < 0.05 | grepl("MED", gene) & adj.P.Val < 0.05 & ceres < -1 | ceres < -1.5 & adj.P.Val < 0.05 & logFC < 0), pch=1) + geom_text_repel(data=subset(nb4_dep_atra, logFC < -0.8 & adj.P.Val < 0.05 & ceres < -0.5 | gene == "PML" & adj.P.Val < 0.05 | grepl("MED", gene) & adj.P.Val < 0.05 & ceres < -1 | ceres < -1.5 & adj.P.Val < 0.05 & logFC < 0), aes(label=gene), force=5, segment.alpha=0.2, size=3) + xlab("DepMap Dependency Score,\nNB4 Cell Line") + ylab("Log2 Fold Change, iDAPT-MS\nNB4 ATRA vs. DMSO") + scale_x_continuous(position = "top", limits=c(-2,0)) + scale_y_continuous(position = "right", limits=c(-3,0)) + coord_flip()
+```
+
+```{r, eval=T}
+fpd_dep <- merge(nb4_dep, mod_sum, by.x=1, by.y="tf")
+
+fpd_dep <- subset(fpd_dep, (gene %in% names(which(rowSums((ceres_hematopoietic < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)])), na.rm=T) < 34))))
+```
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+# exclude essential genes - "dependency" in every hematopoietic cell line
+# threshold determined by mixture modeling
+# colored points based on 
+ggplot(fpd_dep, aes(x=ceres, y=-t.value)) + geom_point(data=subset(fpd_dep, fdr > 0.05), alpha=0.3, color="lightgray") + geom_point(data=subset(fpd_dep, ceres < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]) & fdr < 0.05), color="indianred3", alpha=0.5) + theme_classic() + geom_hline(yintercept=0, lty=3) + geom_vline(xintercept=0, lty=3) + geom_vline(xintercept=min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]), lty=3, color="red") + geom_text_repel(data=subset(fpd_dep, fdr < 0.05 & ceres < -0.65), aes(label=gene), force=5, segment.alpha=0.2, size=3)
+
+#+ geom_hline(yintercept=max(subset(nb4_dep_atra, ceres < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]) & adj.P.Val < 0.05 & logFC < 0)$logFC), lty=3, color="red") + geom_point(data=subset(nb4_dep_atra, logFC < -0.8 & adj.P.Val < 0.05 & ceres < -0.5 | gene == "PML" & adj.P.Val < 0.05 | grepl("MED", gene) & adj.P.Val < 0.05 & ceres < -1 | ceres < -1.5 & adj.P.Val < 0.05 & logFC < 0), pch=1) + geom_text_repel(data=subset(nb4_dep_atra, logFC < -0.8 & adj.P.Val < 0.05 & ceres < -0.5 | gene == "PML" & adj.P.Val < 0.05 | grepl("MED", gene) & adj.P.Val < 0.05 & ceres < -1 | ceres < -1.5 & adj.P.Val < 0.05 & logFC < 0), aes(label=gene), force=5, segment.alpha=0.2, size=3) + xlab("DepMap Dependency Score,\nNB4 Cell Line") + ylab("Log2 Fold Change, iDAPT-MS\nNB4 ATRA vs. DMSO") + scale_x_continuous(position = "top", limits=c(-2,0)) + scale_y_continuous(position = "right", limits=c(-3,0)) + coord_flip()
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+med_dep <- merge(subset(nb4_dep, gene %in% c("MED23", "MED9", "MED24", "MED19", "MED10", "MED26", "MED16", "MED29", "MED15", "MED1", "MED13", "MED11", "MED14", "CDK19", "CCNC", "MED18", "MED30", "MED4", "CDK8", "MED22", "MED6", "MED13L", "MED28", "MED25", "MED12", "MED31", "MED8", "MED17", "MED21", "MED27", "OPA1", "MED7", "MED20")), data.frame(rowMeans(ceres_hematopoietic, na.rm=T)), by.x="gene", by.y=0)
+colnames(med_dep)[3] <- "rowMeans"
+
+ggplot(subset(nb4_dep_atra_full, gene %in% c("MED23", "MED9", "MED24", "MED19", "MED10", "MED26", "MED16", "MED29", "MED15", "MED1", "MED13", "MED11", "MED14", "CDK19", "CCNC", "MED18", "MED30", "MED4", "CDK8", "MED22", "MED6", "MED13L", "MED28", "MED25", "MED12", "MED31", "MED8", "MED17", "MED21", "MED27", "OPA1", "MED7", "MED20") & gene %in% nb4_atra.dmso$GeneSymbol), aes(x=logFC, y=ceres)) + geom_point() + theme_classic() + geom_hline(yintercept=0, lty=3, color="black") + geom_hline(yintercept=min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]), lty=3, color="red") + geom_vline(xintercept=max(subset(nb4_dep_atra, ceres < min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]) & adj.P.Val < 0.05 & logFC < 0)$logFC), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="black") + geom_text_repel(aes(label=gene), size=2, segment.alpha=0.2) + ylab("DepMap Dependency Score,\nNB4 Cell Line") + xlab("Log2 Fold Change, iDAPT-MS\nNB4 ATRA vs. DMSO")
+
+
+```
+
+
+```{r, eval=T}
+ggplot(med_dep, aes(x=rowMeans, y=ceres)) + geom_point() + theme_classic() + geom_text_repel(aes(label=gene), size=2, segment.alpha=0.2) + xlab("DepMap Average Dependency Score,\nHematopoietic Cell Lines") + ylab("DepMap Dependency Score,\nNB4 Cell Line") + geom_abline(slope=1, intercept=0, lty=3, color="red") + geom_hline(yintercept=min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]), lty=3) + geom_vline(xintercept=min(mixmdl$x[which(mixmdl$posterior[,2] > 0.5)]), lty=3)
+```
+
+```{r, eval=T, fig.width=4, fig.height=4}
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A == "NFATC2" & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B == "NFATC2" & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$adj.P.Val)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+V(g.cmp1)$lfc <- (subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$logFC)[match(V(g.cmp1)$name, subset(nb4_atra.dmso, GeneSymbol %in% V(g.cmp1)$name)$GeneSymbol)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "royalblue3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "mistyrose", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "skyblue1", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=18, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.6)
+
+```
+
+
+```{r, eval=T}
+#biocLite("tximport")
+library(tximport)
+
+## List all directories containing data  
+samples <- list.files(path = "rnaseq/", full.names = T, pattern=".sf")
+
+library(biomaRt)
+tx2gene <- getBM(attributes= c("ensembl_transcript_id","ensembl_gene_id", "external_gene_name"),
+                     mart = useDataset("hsapiens_gene_ensembl", useMart("ensembl")))
+
+# Run tximport
+txi <- tximport(samples, type="salmon", tx2gene=tx2gene[,c("ensembl_transcript_id", "ensembl_gene_id")], countsFromAbundance="lengthScaledTPM", ignoreTxVersion = T)
+
+# create treatment sample matrix
+nb4_rnaseq <- data.frame(treatment = c(rep("DMSO",2), rep("ATRA",2),
+                                        rep("DMSO",2), rep("ATRA",2),
+                                        rep("DMSO",1), rep("ATRA",1)),
+                          batch = c(rep("Set 1",4), rep("Set 2",4), rep("Set 3", 2)),
+                          row.names = paste0("X",1:10))
+
+library(DESeq2)
+nb4_dds <- DESeqDataSetFromTximport(txi, colData = nb4_rnaseq, design = ~treatment+batch)
+#nb4_dds <- DESeqDataSetFromTximport(txi, colData = nb4_rnaseq, design = ~treatment)
+
+nb4_vst <- assay(varianceStabilizingTransformation(nb4_dds))
+```
+
+```{r, eval=T, fig.width=2, fig.height=1.5}
+nb4_pc <- prcomp(t(nb4_vst))
+ggplot(data.frame(nb4_pc$x, Sample=nb4_rnaseq[colnames(nb4_vst),1], Batch=nb4_rnaseq[colnames(nb4_vst),2], Name=colnames(nb4_vst)), aes(PC1, PC2)) + 
+  geom_point(aes(colour = Sample, shape=Batch), size=3)  + theme_classic() + xlab(paste0("PC1 (", 100*summary(nb4_pc)$importance[2,1], "% of variance)")) + ylab(paste0("PC2 (", 100*summary(nb4_pc)$importance[2,2], "% of variance)")) + geom_vline(xintercept=0, lty=3, color="red")  + geom_hline(yintercept=0, lty=3, color="red") #  + geom_text_repel(aes(label=Name))
+```
+
+```{r, eval=T}
+nb4_dds <- estimateSizeFactors(nb4_dds)
+nb4_dds <- DESeq(nb4_dds)
+nb4_results <- subset(data.frame(results(nb4_dds,contrast=c("treatment", "ATRA", "DMSO"), independentFiltering = F, cooksCutoff = Inf)))
+nb4_results <- merge(nb4_results, tx2gene[!duplicated(tx2gene[,c(2,3)]),c(2,3)], by.x=0, by.y=1)
+
+nb4_results_shrunk <- lfcShrink(nb4_dds, contrast=c("treatment", "ATRA", "DMSO"), 
+                                 res=results(nb4_dds,contrast=c("treatment", "ATRA", "DMSO"), independentFiltering = F, cooksCutoff = Inf))
+nb4_results_shrunk <- data.frame(nb4_results_shrunk)
+nb4_results_shrunk <- merge(nb4_results_shrunk, tx2gene[!duplicated(tx2gene[,c(2,3)]),c(2,3)], by.x=0, by.y=1)
+```
+
+```{r, eval=T, fig.width=1.8, fig.height=1.3}
+ggplot(nb4_results_shrunk, aes(x=log2FoldChange, y=-log10(padj))) + geom_point(pch=20, color="lightgray", alpha=0.5, data=subset(subset(nb4_results_shrunk), padj > 0.05)) + geom_point(pch=20, color="skyblue", data=subset(subset(nb4_results_shrunk), padj < 0.05 & log2FoldChange > 0), alpha=0.5) + geom_point(pch=20, color="indianred", data=subset(subset(nb4_results_shrunk), padj < 0.05 & log2FoldChange < 0), alpha=0.5) + theme_classic() + xlim(c(-10,10)) + ylim(c(0,300)) + geom_hline(yintercept=0, lty=3) +
+  geom_hline(yintercept=-log10(0.05), lty=3, color="red") + geom_vline(xintercept=0, lty=3, color="red") + ylab("-Log10 FDR") + xlab("Log2 Fold Change,\nNB4 ATRA vs. DMSO") # + 
+  #geom_text_repel(data=subset(atac_results, padj < 1e-3 & abs(log2FoldChange) > 2 & baseMean > 100 | padj < 1e-9 & baseMean > 100), aes(label=position), size=2, segment.color="black", force=5, segment.alpha=0.8, segment.size=0.1)
+```
+
+```{r, eval=T}
+write.table(nb4_results_shrunk, file="nb4_atra_rnaseq.txt", row.names=F, quote=F)
+```
+
+```{r, eval=T}
+dim(nb4_results_shrunk)
+dim(subset(nb4_results_shrunk, log2FoldChange > 0 & padj < 0.05))
+dim(subset(nb4_results_shrunk, log2FoldChange < 0 & padj < 0.05))
+```
+
+```{r, eval=T}
+fpd.rna <- merge(nb4_results_shrunk[,c(3,7,8)] %>% group_by(external_gene_name) %>% summarize_all(mean) %>% as.data.frame(), mod_sum, by.x="external_gene_name", by.y="tf")
+#fpd.rna <- subset(fpd.rna, external_gene_name %in% fpd.ms$GeneSymbol & external_gene_name == tf)
+```
+
+```{r, eval=T, fig.width=3, fig.height=3}
+ggplot(fpd.rna, aes(y=-t.value, x=log2FoldChange)) + geom_point(data=subset(fpd.rna, class=="red" & padj < 0.05), color="indianred3", alpha=0.8, size=3) + geom_point(data=subset(fpd.rna, class=="blue" & padj < 0.05), color="skyblue3", alpha=0.8, size=3) + geom_point(data=subset(fpd.rna, class=="red" & padj > 0.05), color="black", alpha=0.1, size=3) + geom_point(data=subset(fpd.rna, padj > 0.05 & class == "blue"), color="gray", alpha=0.2, size=3) + theme_classic() + geom_vline(xintercept=c(max(subset(fpd.rna, padj < 0.05 & log2FoldChange < 0)$log2FoldChange), min(subset(fpd.rna, padj < 0.05 & log2FoldChange > 0)$log2FoldChange)), lty=3, color="red") + geom_vline(xintercept=0, lty=1, lwd=0.2) + geom_hline(yintercept=c(min(-subset(fpd.rna, fdr < 0.05 & t.value < 0)$t.value), max(-subset(fpd.rna, fdr < 0.05 & t.value > 0)$t.value)), lty=3, color="red") + ylab("Footprinting Composite Score\nNB4 ATRA vs. DMSO iDAPT-seq") + xlab("Log2 Fold Change\nNB4 ATRA vs. DMSO RNA-seq") + geom_text_repel(data=subset(fpd.rna, external_gene_name %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12")), aes(label=external_gene_name), size=3, force=5, segment.alpha = 0.2) + geom_point(pch=1, size=3, data=subset(fpd.rna, external_gene_name %in% c("RARA", "BCL11A", "RXRA", "RXRG", "RXRB", "NR2F2", "IRF8", "IRF7", "IRF2", "SPI1", "STAT2", "IRF9", "ESRRA", "GMEB1", "JUNB", "JUND", "SMARCC1", "CEBPE", "CEBPB", "HIC1", "JUN", "MAFK", "MEF2A", "NFE2", "NFE2L2", "UNCX", "OLIG2", "ELF4", "ETV6", "STAT6", "FOXC1", "BHLHE40", "TGIF2", "TCF3", "SIX3", "THRA", "ELK3", "CREB3L2", "CEBPD", "CEBPA", "ZBTB12")))
+
+```
+
+
+```{r, eval=T, fig.width=1.5, fig.height=1.5}
+ms.rna <- merge(nb4_results_shrunk[,c(3,7,8)] %>% group_by(external_gene_name) %>% summarize_all(mean) %>% as.data.frame(), nb4_atra.dmso, by.x="external_gene_name", by.y="GeneSymbol")
+ms.rna <- ms.rna[which(!is.na(ms.rna$log2FoldChange * ms.rna$logFC)),]
+
+ggplot(ms.rna, aes(x=log2FoldChange, y=logFC)) + geom_point(alpha=0.5) + theme_classic() + geom_vline(xintercept=0, lty=3, color="red") + geom_hline(yintercept=0, lty=3, color="red") + ylab("Log2 Fold Change,\nNB4 ATRA vs. DMSO iDAPT-MS") + xlab("Log2 Fold Change,\nNB4 ATRA vs. DMSO RNA-seq") + geom_smooth(formula=y~x, method="lm")
+```
+
+```{r, eval=T}
+cor(ms.rna[,c("log2FoldChange", "logFC")])
+```
+
+GSM1288651 - shscr nb4 vehicle ctrl 1 (1 uM 72 hr)
+GSM1288652 - shscr nb4 vehicle ctrl 2 (1 uM 72 hr)
+GSM1288653 - shscr nb4 vehicle atra 1 (1 uM 72 hr)
+GSM1288654 - shscr nb4 vehicle atra 2 (1 uM 72 hr)
+
+GSM1288659 - wt nb4 veh ctrl 1 (1 uM 72 hr)
+GSM1288660 - wt nb4 veh ctrl 2 (1 uM 72 hr)
+GSM1288661 - wt nb4 atra 1 (1 uM 72 hr)
+GSM1288662 - wt nb4 atra 2 (1 uM 72 hr)
+
+GSM2464389 - nb4 ctrl dmso (1 uM 48 hr)
+GSM2464392 - nb4 ctrl atra (1 uM 48 hr)
+
+```{r, eval=T, fig.width=2, fig.height=2}
+cmp1 <- subset(biogrid, (Official.Symbol.Interactor.A == "SPI1" & Official.Symbol.Interactor.B %in% nb4_atra.dmso$GeneSymbol) | 
+                        (Official.Symbol.Interactor.B == "SPI1" & Official.Symbol.Interactor.A %in% nb4_atra.dmso$GeneSymbol))
+cmp1 <- subset(nb4_atra.dmso, GeneSymbol %in% cmp1$Official.Symbol.Interactor.A | GeneSymbol %in% cmp1$Official.Symbol.Interactor.B)
+cmp1 <- subset(biogrid, Official.Symbol.Interactor.A %in% cmp1$GeneSymbol & Official.Symbol.Interactor.B %in% cmp1$GeneSymbol)
+
+g.cmp1 <- igraph::simplify(graph_from_edgelist(as.matrix(cmp1), directed=F))
+
+V(g.cmp1)$fdr <- (subset(nb4_results_shrunk, external_gene_name %in% V(g.cmp1)$name)$padj)[match(V(g.cmp1)$name, subset(nb4_results_shrunk, external_gene_name %in% V(g.cmp1)$name)$external_gene_name)]
+V(g.cmp1)$lfc <- (subset(nb4_results_shrunk, external_gene_name %in% V(g.cmp1)$name)$log2FoldChange)[match(V(g.cmp1)$name, subset(nb4_results_shrunk, external_gene_name %in% V(g.cmp1)$name)$external_gene_name)]
+
+V(g.cmp1)$color <- ifelse(V(g.cmp1)$fdr < (0.05) & V(g.cmp1)$lfc > .5, "deepskyblue3", ifelse(V(g.cmp1)$fdr < 0.05 & V(g.cmp1)$lfc < -.5, "indianred3", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc > 0, "lightblue1", ifelse(V(g.cmp1)$fdr < 0.2 & V(g.cmp1)$lfc < 0, "mistyrose", "lightgray"))))
+V(g.cmp1)$shape <- ifelse(V(g.cmp1)$name %in% diff.bf$name,"square", "circle")
+
+igraph.options(vertex.size=35, edge.arrow.size=0.2, edge.width=0.5)
+plot(g.cmp1, 
+     layout=layout.kamada.kawai,     
+     vertex.label.color="black",
+     vertex.label.family="Helvetica",
+     vertex.label.cex=.5)
+
+```
+
+```{r, eval=T}
+atra.dmso.rna.ranks <- subset(nb4_results_shrunk, external_gene_name %in% nb4_atra.dmso$GeneSymbol)$log2FoldChange
+names(atra.dmso.rna.ranks) <- subset(nb4_results_shrunk, external_gene_name %in% nb4_atra.dmso$GeneSymbol)$external_gene_name
+```
+
+```{r, eval=T}
+set.seed(8)
+fgsea_biogrid.rna <- fgsea(pathways=biogrid_list, 
+                   stats=atra.dmso.rna.ranks, 
+                   minSize = 5,
+                   nperm=10000)
+fgsea_biogrid.rna <- fgsea_biogrid.rna[order(fgsea_biogrid.rna$NES),]
+fgsea_biogrid.rna$pathway <- factor(fgsea_biogrid.rna$pathway, levels=unique(fgsea_biogrid.rna$pathway))
+```
+
+```{r, eval=T}
+subset(fgsea_biogrid.rna, pathway=="SPI1_complex")
+```
+
+# HPA Ontology analysis - differential proteins/genes (up vs. down)
+
+```{r, eval=T}
+# hpa localization
+hpa <- read.table(file="../../../DATA/EXP-JDL-391/TMT/tmt analysis/human protein atlas/subcellular_location.tsv", header=T, sep='\t')
+hpa_enhanced <- subset(hpa, Reliability %in% c("Enhanced", "Supported"))
+#hpa_enhanced <- merge(hpa_enhanced, entrezgenes, by.y=2, by.x=2)
+
+hpa_loc <- unique(c(as.character(hpa_enhanced$Enhanced), as.character(hpa_enhanced$Supported)))
+hpa_loc <- hpa_loc[!grepl(";", hpa_loc)]
+hpa_loc <- hpa_loc[which(hpa_loc != "")]
+
+hpa_list <- list()
+for(c in 1:length(hpa_loc)){
+  hpa_list[[c]] <- unique(subset(bg_genes, external_gene_name %in% hpa_enhanced[which(grepl(hpa_loc[c], paste(hpa_enhanced$Enhanced, hpa_enhanced$Supported))),2])$uniprotswissprot)
+  #hpa_list[[c]] <- c(as.character(hpa_enhanced[which(hpa_enhanced$Enhanced == hpa_loc[c] & hpa_enhanced$Supported == ""),2]))
+}
+names(hpa_list) <- hpa_loc
+
+hpa_ont <- data.frame(ont=rep(names(hpa_list), times=sapply(hpa_list, length)), gene=unlist(hpa_list))
+hpa_ont <- rbind(hpa_ont,
+                 data.frame(ont="background", gene=unique(bg_genes$uniprotswissprot)))
+```
+
+```{r, eval=T}
+nb4_results_condensed <- nb4_results_shrunk[,c(3,7,8)] %>% group_by(external_gene_name) %>% summarize_all(mean) %>% as.data.frame()
+```
+
+
+```{r, eval=T}
+length(unique(subset(nb4_atra.dmso, adj.P.Val < 0.05)$uniprot2)) # 2672 significant IDs
+
+length(unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05)$external_gene_name)$uniprotswissprot)) # 8242 significant uniprot IDs
+
+length(intersect((unique(subset(nb4_atra.dmso, adj.P.Val < 0.05)$uniprot2)), (unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05)$external_gene_name)$uniprotswissprot)))) # 1919 significant overlapping uniprot IDs
+
+
+length(unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC > 0)$uniprot2)) # 1545 significant IDs (up)
+
+length(unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange > 0)$external_gene_name)$uniprotswissprot)) # 3656 significant uniprot IDs (up)
+
+length(intersect((unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC > 0)$uniprot2)), (unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange > 0)$external_gene_name)$uniprotswissprot)))) # 727 significant overlapping uniprot IDs (both up)
+
+
+length(unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC < 0)$uniprot2)) # 1128 significant IDs (dn)
+
+length(unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange < 0)$external_gene_name)$uniprotswissprot)) # 4587 significant uniprot IDs (dn)
+
+length(intersect((unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC < 0)$uniprot2)), (unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange < 0)$external_gene_name)$uniprotswissprot)))) # 776 significant overlapping uniprot IDs (both dn)
+
+
+```
+
+```{r, eval=T, fig.width=3, fig.height=2}
+nb4_proteome_diff_list <- list(rna_dn=unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange < -1)$external_gene_name)$uniprotswissprot), oc_dn=as.character(unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC < -1)$uniprot2)), 
+                               rna_up=unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange > 1)$external_gene_name)$uniprotswissprot), oc_up=as.character(unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC > 1)$uniprot2)))
+
+nb4_proteome_diff_list <- list(rna_dn=unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed,  log2FoldChange < -1)$external_gene_name)$uniprotswissprot), oc_dn=as.character(unique(subset(nb4_atra.dmso, logFC < -1)$uniprot2)), 
+                               rna_up=unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, log2FoldChange > 1)$external_gene_name)$uniprotswissprot), oc_up=as.character(unique(subset(nb4_atra.dmso, logFC > 1)$uniprot2)))
+
+df_proteome_list <- NULL
+for(i in 1:length(nb4_proteome_diff_list)){
+for(j in unique(subset(hpa_ont, ont != "background")$ont)){
+  df_proteome_list <- rbind(df_proteome_list, cbind(names(nb4_proteome_diff_list)[i], j, length(intersect(nb4_proteome_diff_list[[i]], subset(hpa_ont, ont == j)$gene)) / length(intersect(nb4_proteome_diff_list[[i]], subset(hpa_ont, ont != "background")$gene)), length(intersect(nb4_proteome_diff_list[[i]], subset(hpa_ont, ont == j)$gene))))
+}}
+df_proteome_list <- data.frame(df_proteome_list)
+df_proteome_list$V3 <- as.numeric(as.character(df_proteome_list$V3))
+df_proteome_list$V4 <- as.numeric(as.character(df_proteome_list$V4))
+colnames(df_proteome_list) <- c("Dataset", "HPA Ont", "Prop", "Num_Prot")
+df_proteome_list <- subset(df_proteome_list, `HPA Ont` != "background")
+df_proteome_list$Dataset <- factor(df_proteome_list$Dataset, levels=(c("rna_dn", "rna_up", "oc_dn", "oc_up")))
+#levels(df_proteome_list$Dataset) <- rev(c("rna", "wcl", "nuclear", "oc"))
+df_proteome_list$`HPA Ont` <- factor(df_proteome_list$`HPA Ont`, levels=rev(levels(df_proteome_list$`HPA Ont`)))
+
+#df_proteome_list$diff <- df_proteome_list$Prop - subset(df_proteome_list, Dataset == "rna")$Prop
+#df_proteome_list$pct_diff <- (df_proteome_list$Prop - subset(df_proteome_list, Dataset == "rna")$Prop)/subset(df_proteome_list, Dataset == "rna")$Prop*100
+
+ggplot(df_proteome_list, aes(x=`HPA Ont`, y=Num_Prot, group=Dataset, fill=rev(Dataset))) + geom_bar(position=position_dodge(), stat="identity") + theme_classic() + coord_flip() + scale_fill_manual(values=plasma(5)[c(1:4)], limits=(c("rna_dn", "rna_up", "oc_dn", "oc_up")), labels = rev(c("RNA-seq, Down", "RNA-seq, Up", "iDAPT-MS, Down", "iDAPT-MS, Up"))) + xlab("Human Protein Atlas Subcellular Terms") + ylab("Number of Significant Protein IDs") + #ylim(c(0, 10000)) + 
+  guides(fill=guide_legend(""))
+
+ggplot(df_proteome_list, aes(x=`HPA Ont`, y=Prop, group=Dataset, fill=rev(Dataset))) + geom_bar(position=position_dodge(), stat="identity") + theme_classic() + coord_flip() + scale_fill_manual(values=plasma(5)[c(1:4)], limits=c("rna_up", "rna_dn", "oc_up", "oc_dn"), labels = rev(c("RNA-seq, Up", "RNA-seq, Down", "iDAPT-MS, Up", "iDAPT-MS, Down"))) + xlab("Human Protein Atlas Subcellular Terms") + ylab("Number of Significant Proteins") + #ylim(c(0, 10000)) + 
+  guides(fill=guide_legend(""))
+```
+
+```{r, eval=T, fig.width=2.5, fig.height=1.8}
+hpa_list_uniprot <- hpa_list
+for(n in names(hpa_list_uniprot)){
+  hpa_list_uniprot[[n]] <- unique(subset(bg_genes, uniprotswissprot %in% hpa_list[[n]][which(hpa_list[[n]] != "")])$external_gene_name)
+} 
+
+fgsea_hpa <- fgsea(pathways=hpa_list_uniprot, 
+                   stats=atra.dmso.rna.ranks, 
+                   minSize = 20,
+                   nperm=20000)
+fgsea_hpa$pathway <- factor(fgsea_hpa$pathway, levels=fgsea_hpa$pathway[(order(-log10(fgsea_hpa$padj) * sign(fgsea_hpa$NES)))])
+#fgsea_hpa <- fgsea_hpa[(order(fgsea_hpa$pathway)),]
+
+ggplot(fgsea_hpa, aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(NES)))  +
+  xlab("K562 iDAPT-MS\nHuman Protein Atlas Subcellular Annotations") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="blue", high="red", name="NES", 
+                         breaks=c(-1, 0, 1, 2, 3)) +
+  ylim(c(-3,3)) + geom_hline(yintercept=0, lwd=0.1) + geom_hline(yintercept=c(log10(0.05), -log10(0.05)), lty=3, lwd=0.5, color="red")
+
+```
+
+```{r, eval=T, fig.width=2.5, fig.height=1.8}
+hpa_list_uniprot <- hpa_list
+for(n in names(hpa_list_uniprot)){
+  hpa_list_uniprot[[n]] <- unique(subset(bg_genes, uniprotswissprot %in% hpa_list[[n]][which(hpa_list[[n]] != "")])$external_gene_name)
+} 
+
+fgsea_hpa <- fgsea(pathways=hpa_list_uniprot, 
+                   stats=atra.dmso.ranks, 
+                   minSize = 20,
+                   nperm=20000)
+fgsea_hpa$pathway <- factor(fgsea_hpa$pathway, levels=fgsea_hpa$pathway[(order(-log10(fgsea_hpa$padj) * sign(fgsea_hpa$NES)))])
+#fgsea_hpa <- fgsea_hpa[(order(fgsea_hpa$pathway)),]
+
+ggplot(fgsea_hpa, aes(y = sign(NES)*-log10(padj), x = pathway)) +
+  geom_segment(yend=0, aes(xend=pathway), lty=3) + theme_classic() + ylab("Signed -Log10 FDR") + 
+  geom_point(aes(size=size, color=(NES)))  +
+  xlab("K562 iDAPT-MS\nHuman Protein Atlas Subcellular Annotations") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="Gene Set Size")) +
+  #scale_color_continuous(low="blue", high="red", name=expression("-Log"[10]*" p-value")) +
+  scale_color_continuous(low="blue", high="red", name="NES", 
+                         breaks=c(-1, 0, 1, 2, 3)) +
+  ylim(c(-4,4)) + geom_hline(yintercept=0, lwd=0.1) + geom_hline(yintercept=c(log10(0.05), -log10(0.05)), lty=3, lwd=0.5, color="red")
+
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+library(viridis)
+ggplot(subset(df_proteome_list, Dataset != "rna"), aes(x=`HPA Ont`, y=diff)) + geom_bar(position=position_dodge(), stat="identity") + theme_classic() + coord_flip() + xlab("Human Protein Atlas Subcellular Terms") + ylab("Difference in Proportions of \nProteins Detected/Enriched vs. RNA-seq")
+```
+
+```{r, eval=T, fig.width=3, fig.height=2}
+ggplot(df_proteome_list, aes(x=`HPA Ont`, y=Prop, group=Dataset, fill=rev(Dataset))) + geom_bar(position=position_dodge(), stat="identity") + theme_classic() + coord_flip() + scale_fill_manual(values=plasma(5)[c(1,4)], limits=c("rna", "oc"), labels = rev(c("RNA-seq", "iDAPT-MS"))) + xlab("Human Protein Atlas Subcellular Terms") + ylab("Fraction of Proteins Detected/Enriched") +
+  guides(fill=guide_legend(""))
+```
+
+
+```{r, eval=T, fig.width=2, fig.height=2}
+ggplot(subset(df_proteome_list, Dataset != "rna"), aes(x=`HPA Ont`, y=diff)) + geom_bar(position=position_dodge(), stat="identity") + theme_classic() + coord_flip() + xlab("Human Protein Atlas Subcellular Terms") + ylab("Difference in Proportions of \nProteins Detected/Enriched vs. RNA-seq")
+```
+
+
+```{r, eval=T, fig.width=2, fig.height=2}
+nb4_atra_ms_hpa_enricher <- data.frame(enricher(asdf, universe = unique(bg_genes$uniprotswissprot), TERM2GENE=hpa_ont, qvalueCutoff = 1, pvalueCutoff=1, minGSSize = NA, maxGSSize=NA))
+nb4_atra_ms_hpa_enricher <- nb4_atra_ms_hpa_enricher[order(-nb4_atra_ms_hpa_enricher$pvalue),]
+nb4_atra_ms_hpa_enricher$ID <- factor(nb4_atra_ms_hpa_enricher$ID, levels=nb4_atra_ms_hpa_enricher$ID[order(-nb4_atra_ms_hpa_enricher$pvalue)])
+nb4_atra_ms_hpa_enricher$Description <- factor(nb4_atra_ms_hpa_enricher$Description, levels=nb4_atra_ms_hpa_enricher$Description[rev(order(nb4_atra_ms_hpa_enricher$Description))])
+
+ggplot(subset(nb4_atra_ms_hpa_enricher, Description != "background"), aes(y = -log10(p.adjust), x = Description)) +
+  geom_segment(yend=0, aes(xend=Description), lty=3) + theme_classic() + ylab("-Log10 FDR") + 
+  geom_point(aes(size=Count)) + #, color=(p.adjust)))  +
+  xlab("Human Protein Atlas Subcellular Terms") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="# Genes")) +
+  geom_hline(yintercept=0, lwd=0.1)# + ylim(c(0,200)) + ggtitle(i))
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+nb4_atra_ms_hpa_enricher <- data.frame(enricher(setdiff(unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05)$external_gene_name)$uniprotswissprot), unique(subset(nb4_atra.dmso, adj.P.Val < 0.05)$uniprot2)), universe = unique(bg_genes$uniprotswissprot), TERM2GENE=hpa_ont, qvalueCutoff = 1, pvalueCutoff=1, minGSSize = NA, maxGSSize=NA))
+nb4_atra_ms_hpa_enricher <- nb4_atra_ms_hpa_enricher[order(-nb4_atra_ms_hpa_enricher$pvalue),]
+nb4_atra_ms_hpa_enricher$ID <- factor(nb4_atra_ms_hpa_enricher$ID, levels=nb4_atra_ms_hpa_enricher$ID[order(-nb4_atra_ms_hpa_enricher$pvalue)])
+nb4_atra_ms_hpa_enricher$Description <- factor(nb4_atra_ms_hpa_enricher$Description, levels=nb4_atra_ms_hpa_enricher$Description[rev(order(nb4_atra_ms_hpa_enricher$Description))])
+
+ggplot(subset(nb4_atra_ms_hpa_enricher, Description != "background"), aes(y = -log10(p.adjust), x = Description)) +
+  geom_segment(yend=0, aes(xend=Description), lty=3) + theme_classic() + ylab("-Log10 FDR") + 
+  geom_point(aes(size=Count)) + #, color=(p.adjust)))  +
+  xlab("Human Protein Atlas Subcellular Terms") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="# Genes")) +
+  geom_hline(yintercept=0, lwd=0.1)# + ylim(c(0,200)) + ggtitle(i))
+```
+
+
+```{r, eval=T}
+sort(unique(subset(bg_genes, uniprotswissprot %in% intersect((unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC < 0)$uniprot2)), (unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange > 0)$external_gene_name)$uniprotswissprot))))$external_gene_name)) # increased RNA, decreased Protein
+
+sort(unique(subset(bg_genes, uniprotswissprot %in% intersect((unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC > 0)$uniprot2)), (unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange < 0)$external_gene_name)$uniprotswissprot))))$external_gene_name)) # decreased RNA, increased Protein
+```
+
+```{r, eval=T}
+sort(unique(subset(bg_genes, uniprotswissprot %in% intersect((unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC < -1)$uniprot2)), (unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange > 1)$external_gene_name)$uniprotswissprot))))$external_gene_name)) # increased RNA, decreased Protein
+
+sort(unique(subset(bg_genes, uniprotswissprot %in% intersect((unique(subset(nb4_atra.dmso, adj.P.Val < 0.05 & logFC > 1)$uniprot2)), (unique(subset(bg_genes, external_gene_name %in% subset(nb4_results_condensed, padj < 0.05 & log2FoldChange < -1)$external_gene_name)$uniprotswissprot))))$external_gene_name)) # decreased RNA, increased Protein
+```
+
+
+nb4_results_shrunk[,c(3,7,8)] %>% group_by(external_gene_name) %>% summarize_all(mean) %>% as.data.frame()
+
+nb4_atra.dmso
+
+```{r, eval=T, fig.width=2, fig.height=2}
+nb4_atra_ms_hpa_enricher <- data.frame(enricher(subset(nb4_atra.dmso, adj.P.Val < 0.05)$uniprot2, universe = unique(bg_genes$uniprotswissprot), TERM2GENE=hpa_ont, qvalueCutoff = 1, pvalueCutoff=1, minGSSize = NA, maxGSSize=NA))
+nb4_atra_ms_hpa_enricher <- nb4_atra_ms_hpa_enricher[order(-nb4_atra_ms_hpa_enricher$pvalue),]
+nb4_atra_ms_hpa_enricher$ID <- factor(nb4_atra_ms_hpa_enricher$ID, levels=nb4_atra_ms_hpa_enricher$ID[order(-nb4_atra_ms_hpa_enricher$pvalue)])
+nb4_atra_ms_hpa_enricher$Description <- factor(nb4_atra_ms_hpa_enricher$Description, levels=nb4_atra_ms_hpa_enricher$Description[rev(order(nb4_atra_ms_hpa_enricher$Description))])
+
+ggplot(subset(nb4_atra_ms_hpa_enricher, Description != "background"), aes(y = -log10(p.adjust), x = Description)) +
+  geom_segment(yend=0, aes(xend=Description), lty=3) + theme_classic() + ylab("-Log10 FDR") + 
+  geom_point(aes(size=Count)) + #, color=(p.adjust)))  +
+  xlab("Human Protein Atlas Subcellular Terms") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="# Genes")) +
+  geom_hline(yintercept=0, lwd=0.1)# + ylim(c(0,200)) + ggtitle(i))
+```
+
+```{r, eval=T, fig.width=2, fig.height=2}
+nb4_atra_rna_hpa_enricher <- data.frame(enricher(subset(bg_genes, external_gene_name %in% subset(nb4_results_shrunk[,c(3,7,8)] %>% group_by(external_gene_name) %>% summarize_all(mean) %>% as.data.frame(), padj < 0.05)$external_gene_name)$uniprotswissprot, universe = unique(bg_genes$uniprotswissprot), TERM2GENE=hpa_ont, qvalueCutoff = 1, pvalueCutoff=1, minGSSize = NA, maxGSSize=NA))
+nb4_atra_rna_hpa_enricher <- nb4_atra_rna_hpa_enricher[order(-nb4_atra_rna_hpa_enricher$pvalue),]
+nb4_atra_rna_hpa_enricher$ID <- factor(nb4_atra_rna_hpa_enricher$ID, levels=nb4_atra_rna_hpa_enricher$ID[order(-nb4_atra_rna_hpa_enricher$pvalue)])
+nb4_atra_rna_hpa_enricher$Description <- factor(nb4_atra_rna_hpa_enricher$Description, levels=nb4_atra_rna_hpa_enricher$Description[rev(order(nb4_atra_rna_hpa_enricher$Description))])
+
+ggplot(subset(nb4_atra_rna_hpa_enricher, Description != "background"), aes(y = -log10(p.adjust), x = Description)) +
+  geom_segment(yend=0, aes(xend=Description), lty=3) + theme_classic() + ylab("-Log10 FDR") + 
+  geom_point(aes(size=Count)) + #, color=(p.adjust)))  +
+  xlab("Human Protein Atlas Subcellular Terms") + coord_flip() + 
+  theme(legend.position = "right", axis.text.y = element_text(vjust=0.5)) +
+  guides(size=guide_legend(title="# Genes")) +
+  geom_hline(yintercept=0, lwd=0.1)# + ylim(c(0,200)) + ggtitle(i))
+```
+
+
+

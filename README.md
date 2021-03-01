@@ -1,7 +1,7 @@
 # Dual DNA/protein tagging of open chromatin unveils dynamics of epigenomic landscapes in leukemia
 
 <i>Work in progress!</i>
-This repository will provide instructions and code to reproduce all results, numerics, and figures from the [iDAPT-MS paper]( https://dx.doi.org/10.1038/s41592-021-01077-8):
+This repository provides instructions and code to reproduce results, numerics, and figures from the [iDAPT-MS paper]( https://dx.doi.org/10.1038/s41592-021-01077-8):
 > J.D. Lee, J.A. Paulo, R.R. Posey, V. Mugoni, N.R. Kong, G. Cheloni, Y.-R. Lee, F.J. Slack, D.G. Tenen, J.G. Clohessy, S.P. Gygi, P.P. Pandolfi. Dual DNA and protein tagging of open chromatin unravels aberrant epigenomic landscapes in leukemia, Nature Methods (2021), https://dx.doi.org/10.1038/s41592-021-01077-8
 
 ## Abstract
